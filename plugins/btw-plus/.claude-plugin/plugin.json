@@ -1,0 +1,68 @@
+{
+  "name": "btw-plus",
+  "version": "1.0.0",
+  "description": "ツールが使える btw。履歴を覚え、サイドウィンドウに答えを出し、画面で選択した文章を引用して質問できる。答えはメインの会話に入れることもできる。",
+  "author": {
+    "name": "TIH-HIT"
+  },
+  "homepage": "https://github.com/TIH-HIT/claude-plugins/tree/main/plugins/btw-plus",
+  "repository": "https://github.com/TIH-HIT/claude-plugins/tree/main/plugins/btw-plus",
+  "license": "MIT",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "allowedTools": {
+      "type": "string",
+      "title": "自動許可するツール",
+      "description": "サイド質問のフォークで確認なしに使えるツール(カンマ区切り)。編集系(Edit/Write/NotebookEdit)は常に禁止。",
+      "default": "Read,Grep,Glob,WebSearch,WebFetch"
+    },
+    "model": {
+      "type": "string",
+      "title": "モデル",
+      "description": "フォークに使うモデル(例: haiku, sonnet)。空ならセッションの既定。",
+      "default": ""
+    },
+    "effort": {
+      "type": "string",
+      "title": "エフォート",
+      "description": "サイド質問だけの思考の深さ(low / medium / high / xhigh / max)。空ならセッションの既定。",
+      "default": ""
+    },
+    "prefixes": {
+      "type": "string",
+      "title": "質問の接頭辞",
+      "description": "プロンプトの先頭に付けるとサイド質問になる文字列(カンマ区切り)。半角の ? で始まる接頭辞は、空のプロンプトで標準のヘルプが開くため避ける。",
+      "default": "q:,btw:,？？"
+    },
+    "timeoutSec": {
+      "type": "number",
+      "title": "タイムアウト(秒)",
+      "description": "1回のサイド質問を打ち切るまでの秒数(最大600)。",
+      "default": 270
+    },
+    "paneColumns": {
+      "type": "number",
+      "title": "ペインの幅(列数)",
+      "description": "ペインを開くときに希望する幅。0 なら標準。ドラッグなどで変えた幅が優先される。",
+      "default": 0
+    },
+    "paneRows": {
+      "type": "number",
+      "title": "ペインの高さ(行数)",
+      "description": "画面の下に出るときに希望する高さ。0 なら標準。ドラッグなどで変えた高さが優先される。",
+      "default": 0
+    },
+    "fixedLayout": {
+      "type": "boolean",
+      "title": "操作ボタンと入力欄を固定する",
+      "description": "オンなら、上の操作ボタンと下の入力欄をペインに固定し、間に新しい順で履歴を出す(古い履歴は▲▼で見る)。表示が崩れるときはオフにする。",
+      "default": true
+    },
+    "autoInject": {
+      "type": "boolean",
+      "title": "回答を自動でメインの会話に入れる",
+      "description": "オンなら、回答が届くたびにメインの会話へ追加する。既定はオフ(ペインのボタンで1件ずつ入れる)。",
+      "default": false
+    }
+  }
+}

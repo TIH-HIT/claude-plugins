@@ -1,0 +1,12 @@
+{
+  "name": "tih-hit-plugins",
+  "description": "TIH-HIT の Claude Code プラグイン集",
+  "owner": { "name": "TIH-HIT" },
+  "plugins": [
+    {
+      "name": "btw-plus",
+      "source": "./plugins/btw-plus",
+      "description": "ツールが使える btw。履歴の記憶、サイドウィンドウ、選択文章の引用つき。"
+    }
+  ]
+}
