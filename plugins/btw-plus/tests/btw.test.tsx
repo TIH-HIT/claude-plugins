@@ -585,18 +585,25 @@ test('the band is framed, and keeps the fixed layout at its short height', { opt
   await ui.unmount()
 })
 
-test('a table scrolls as one block: it is drawn whole or not at all', async ($, on) => {
+test('a table is drawn as aligned rows by the plugin, whole or not at all', async ($, on) => {
   const filler = Array.from({ length: 40 }, (_, n) => `行${n + 1}`).join('\n')
-  const table = '| 名前 | 値 |\n|---|---|\n| あ | 1 |\n| い | 2 |\n| う | 3 |'
+  const table = '| 名前 | 値 |\n|---|---|\n| あいう | 1 |\n| い | **22** |'
   const { clock } = world(on, { stdout: `${filler}\n\n${table}\n\n末尾` })
   await start($)
   await ask($, clock, 'q: 表')
 
   const ui = await mount($)
+  // Aligned: every column padded to its widest cell, the rule as wide.
+  expect(await ui.find({ type: 'Text', text: '| 名前   | 値 |' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: '|--------|----|' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: '| あいう | 1  |' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: '| い     | 22 |' })).toBeDefined()
+  expect(await ui.find({ type: 'Markdown', text: /\| 名前/ })).toBeUndefined()
+
   for (let n = 0; n < 8; n += 1) {
-    const text = (await ui.findAll({ type: 'Markdown' })).map(block => block.text).join('\n')
-    const rows = ['| 名前 | 値 |', '|---|---|', '| あ | 1 |', '| い | 2 |', '| う | 3 |']
-    const shown = rows.filter(row => text.includes(row)).length
+    const rows = ['| 名前   | 値 |', '| あいう | 1  |', '| い     | 22 |']
+    let shown = 0
+    for (const row of rows) if (await ui.find({ type: 'Text', text: row })) shown += 1
     expect([0, rows.length]).toContain(shown)
     await ui.press({ key: 'older' })
   }

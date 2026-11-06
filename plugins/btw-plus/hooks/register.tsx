@@ -402,10 +402,40 @@ async function currentSelection($: EngineInterface): Promise<string> {
 // the engine, so the controls and the field above and below it never move.
 type Entry = {
   key: string
-  kind: 'q' | 'quote' | 'label' | 'pending' | 'ln' | 'error' | 'foot' | 'gap'
+  kind: 'q' | 'quote' | 'label' | 'pending' | 'ln' | 'table' | 'error' | 'foot' | 'gap'
   item: Item
   text: string
   rows: number
+}
+
+// A Markdown table as aligned plain rows. The engine's Markdown turns a table
+// wider than a narrow pane into a list; these rows keep the grid and are cut
+// at the pane's edge instead (the whole answer is in "回答をコピー").
+function tableLines(text: string): string[] {
+  const plain = (cell: string) => cell.replace(/\*\*|__|`/g, '').trim()
+  const rows = text.split('\n').map(line => {
+    const inner = line.trim().replace(/^\|/, '').replace(/\|$/, '')
+    return inner.split('|').map(plain)
+  })
+  const isRule = (row: string[]) => row.every(cell => /^:?-{1,}:?$/.test(cell))
+  const widths: number[] = []
+  for (const row of rows) {
+    if (isRule(row)) continue
+    row.forEach((cell, at) => {
+      widths[at] = Math.max(widths[at] ?? 1, cells(cell))
+    })
+  }
+
+  return rows.map(row =>
+    isRule(row)
+      ? `|${widths.map(width => '-'.repeat(width + 2)).join('|')}|`
+      : `|${widths
+          .map((width, at) => {
+            const cell = row[at] ?? ''
+            return ` ${cell}${' '.repeat(Math.max(0, width - cells(cell)))} `
+          })
+          .join('|')}|`,
+  )
 }
 
 function entriesOf(all: Item[], columns: number): Entry[] {
@@ -441,8 +471,8 @@ function entriesOf(all: Item[], columns: number): Entry[] {
           let end = at
           while (end + 1 < lines.length && (lines[end + 1] as string).trimStart().startsWith('|')) end += 1
           const block = lines.slice(at, end + 1)
-          // The table draws a rule above and below it, and often between rows.
-          add('ln', block.join('\n'), block.reduce((sum, row) => sum + rowsOf(row), 0) + 3)
+          // Drawn by the plugin, one row a line (see tableLines).
+          add('table', block.join('\n'), block.length)
           at = end
         } else if (line.trimStart().startsWith('```')) {
           let end = at + 1
@@ -674,7 +704,17 @@ async function draw(
       continue
     }
     flush()
-    if (entry.kind === 'q') {
+    if (entry.kind === 'table') {
+      history.push(
+        <Box key={entry.key} flexDirection="column">
+          {tableLines(entry.text).map((line, at) => (
+            <Text key={`${entry.key}:${at}`} wrap="truncate-end" bold={at === 0}>
+              {line}
+            </Text>
+          ))}
+        </Box>,
+      )
+    } else if (entry.kind === 'q') {
       history.push(
         <Text key={entry.key} bold color="suggestion">
           {entry.text}
