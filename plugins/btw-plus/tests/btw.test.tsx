@@ -584,3 +584,21 @@ test('the band is framed, and keeps the fixed layout at its short height', { opt
   expect(await ui.find({ type: 'Text', text: /Q: 質問1$/ })).toBeUndefined()
   await ui.unmount()
 })
+
+test('a window never begins in the middle of a table', async ($, on) => {
+  const filler = Array.from({ length: 30 }, (_, n) => `行${n + 1}`).join('\n')
+  const table = '| 名前 | 値 |\n|---|---|\n| あ | 1 |\n| い | 2 |\n| う | 3 |\n| え | 4 |'
+  const { clock } = world(on, { stdout: `${filler}\n\n${table}\n\n末尾` })
+  await start($)
+  await ask($, clock, 'q: 表')
+
+  const ui = await mount($)
+  const blocks = await ui.findAll({ type: 'Markdown' })
+  const text = blocks.map(block => block.text).join('\n')
+  // Whichever rows show, the header and its rule come with them.
+  if (text.includes('| う | 3 |')) {
+    expect(text).toContain('| 名前 | 値 |')
+    expect(text).toContain('|---|---|')
+  }
+  await ui.unmount()
+})

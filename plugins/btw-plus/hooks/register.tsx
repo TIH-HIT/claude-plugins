@@ -463,6 +463,27 @@ function windowOf(list: Entry[], fromEnd: number, room: number) {
     start -= 1
   }
 
+  // A window that begins inside a table or a code block would draw its tail
+  // as plain text: begin at the top of the table, and of the fenced block.
+  const isRow = (entry?: Entry) =>
+    entry?.kind === 'ln' && entry.text.trimStart().startsWith('|')
+  while (start > 0 && isRow(list[start]) && isRow(list[start - 1])) start -= 1
+  const fenced = (at: number) => {
+    // Lines of the same answer before `at`, counting the ``` fences.
+    let open = false
+    let first = at
+    const item = list[at]?.item
+    while (first > 0 && list[first - 1]?.item === item && list[first - 1]?.kind === 'ln') {
+      first -= 1
+    }
+    for (let i = first; i < at; i += 1) {
+      if ((list[i] as Entry).text.trimStart().startsWith('```')) open = !open
+    }
+
+    return open ? first : at
+  }
+  if (start > 0 && list[start]?.kind === 'ln') start = fenced(start)
+
   return { start, end: Math.min(end, list.length), shown: list.slice(start, end) }
 }
 
