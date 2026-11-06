@@ -575,7 +575,7 @@ test('the band is framed, and keeps the fixed layout at its short height', { opt
   await start($)
   for (let n = 1; n <= 6; n += 1) await ask($, clock, `q: 質問${n}`)
 
-  const ui = await mountBand($, 'terminal', { maxRows: 12, scroll: { offset: 0, bodyRows: 11 } })
+  const ui = await mountBand($, 'terminal', { maxRows: 16, scroll: { offset: 0, bodyRows: 15 } })
   for (const key of ['memory', 'settings', 'ask', 'older', 'newer']) {
     expect([key, Boolean(await ui.find({ key }))]).toEqual([key, true])
   }

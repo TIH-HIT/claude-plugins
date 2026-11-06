@@ -42,7 +42,7 @@ const DEFAULT_PREFIXES = 'q:,btw:,？？'
 // A pane shorter than this is drawn in its natural flow, not the fixed layout.
 const MIN_FIXED_ROWS = 14
 // The band is short (half the screen at most): its fixed layout needs less.
-const MIN_FIXED_BAND_ROWS = 8
+const MIN_FIXED_BAND_ROWS = 12
 
 // Change a tag when the fields of its value change: an older value is then
 // read as the initial one instead of being misread.
@@ -526,8 +526,10 @@ async function draw(
         wrapped(['エフォート', ...EFFORT_OPTIONS.map(row => `[${row.label}]`)])
       : 0)
   // The band's field sits on one row beside the quote button.
-  const composerRows = (staged ? (site.isBand ? 4 : 6) : 0) + (site.isBand ? 1 : 4)
-  const room = Math.max(3, rows - headerRows - composerRows - 1)
+  // The field is framed in both places; the band puts the quote button beside it.
+  const composerRows = (staged ? (site.isBand ? 4 : 6) : 0) + (site.isBand ? 3 : 4)
+  // Two plain lines separate the header, the history and the field.
+  const room = Math.max(3, rows - headerRows - composerRows - 3)
   const isFixed = wantsFixed
   const list = entriesOf(mine, columns)
   const fromEnd = Math.min(Math.max(0, skippedBy), Math.max(0, list.length - 1))
@@ -689,6 +691,13 @@ async function draw(
   }
   flush()
 
+  // A plain line between the controls, the history and the field.
+  const rule = (
+    <Text key="rule" color="promptBorder">
+      {'-'.repeat(Math.max(4, columns))}
+    </Text>
+  )
+
   const frame = {
     ...(site.isBand
       ? { borderStyle: 'round' as const, borderColor: 'promptBorder' as const, paddingX: 1 }
@@ -809,6 +818,7 @@ async function draw(
           </Box>
             </Box>
           ) : null}
+          {rule}
         </Box>
 
         {isFixed ? (
@@ -832,6 +842,7 @@ async function draw(
           </Text>
         ) : null}
 
+        {rule}
         <Box flexDirection="column" flexShrink={0}>
           {staged ? (
             <Box flexDirection="column" borderStyle="round" borderColor="claude" paddingX={1}>
