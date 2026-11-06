@@ -68,12 +68,16 @@ const pick = atom(
   { model: '', effort: '' },
   { shape: 'pick-1' },
 )
+// The item shown whole, in the pane's own flow, instead of the fixed layout.
+const fullAtom = atom({ plugin: 'btw-plus', key: 'full' } as const, '', {
+  shape: 'full-1',
+})
 const pageAtom = atom({ plugin: 'btw-plus', key: 'page' } as const, 0, {
   shape: 'page-1',
 })
 
 const clip = (text: string, max: number): string =>
-  text.length > max ? `${text.slice(0, max)}…` : text
+  text.length > max ? `${text.slice(0, max)}...` : text
 
 const list = (value: unknown, fallback: string): string[] =>
   String(value ?? fallback)
@@ -369,7 +373,43 @@ async function currentSelection($: EngineInterface): Promise<string> {
 
 // A guess at the rows an item takes drawn `columns` wide, a little over so
 // that a fitted window is not cut.
-function itemRows(item: Item, columns: number): number {
+// Markdown spends more rows than its text (gaps, bullets, code), so an answer
+// is given fewer lines than the room it is cut to.
+const MARKDOWN_SLACK = 1.35
+
+// The part of `text` that fits `cap` rows of `width` cells, and whether it was cut.
+function clipAnswer(text: string, width: number, cap: number) {
+  const budget = Math.max(2, Math.floor(cap / MARKDOWN_SLACK))
+  const out: string[] = []
+  let used = 0
+
+  for (const line of text.split('\n')) {
+    const need = Math.max(1, Math.ceil(cells(line) / width))
+    if (used + need > budget) {
+      if (out.length === 0) {
+        // One line longer than the whole allowance: cut it by cells.
+        let kept = ''
+        let taken = 0
+        for (const char of Array.from(line)) {
+          const w = cells(char)
+          if (taken + w > width * budget) break
+          kept += char
+          taken += w
+        }
+        out.push(kept)
+      }
+
+      return { text: out.join('\n'), isCut: true }
+    }
+    out.push(line)
+    used += need
+  }
+
+  return { text, isCut: false }
+}
+
+// Rows an item takes at most, its answer cut to `cap` rows when `cap` is given.
+function itemRows(item: Item, columns: number, cap?: number): number {
   const width = Math.max(12, columns - 2)
   const lines = (text: string) =>
     text
@@ -378,14 +418,27 @@ function itemRows(item: Item, columns: number): number {
   // The "A:" label, the buttons and a gap, then the question, quote and answer.
   let rows = lines(`Q: ${item.q}`) + 3
   if (item.quote) rows += 1
-  rows += item.status === 'pending' ? 1 : lines(item.a || ' ')
+  if (item.status === 'pending') {
+    rows += 1
+  } else if (cap === undefined) {
+    rows += Math.ceil(lines(item.a || ' ') * MARKDOWN_SLACK)
+  } else {
+    const shown = clipAnswer(item.a || ' ', width, cap)
+    rows += Math.ceil(lines(shown.text || ' ') * MARKDOWN_SLACK) + (shown.isCut ? 1 : 0)
+  }
 
-  return Math.ceil(rows * 1.15)
+  return Math.ceil(rows * 1.1)
 }
 
 // The newest items that fit `room` rows, ending `skipped` items before the
 // newest; always at least one.
-function windowOf(all: Item[], skipped: number, room: number, columns: number) {
+function windowOf(
+  all: Item[],
+  skipped: number,
+  room: number,
+  columns: number,
+  cap: number,
+) {
   const end = Math.max(0, all.length - skipped)
   let start = end
   let used = 0
@@ -393,7 +446,7 @@ function windowOf(all: Item[], skipped: number, room: number, columns: number) {
   while (start > 0) {
     const item = all[start - 1]
     if (!item) break
-    const need = itemRows(item, columns)
+    const need = itemRows(item, columns, cap)
     if (used + need > room && start < end) break
     used += need
     start -= 1
@@ -521,8 +574,17 @@ export const register: Register = (on, options) => {
     const m = await read($, memory)
     const staged = await read($, quote)
     const chosen = await read($, pick)
+    const sessionModel = await $.session.model().catch(() => '')
+    const modelRows = modelOptions(
+      sessionModel,
+      chosen.model || String(options.model ?? '').trim(),
+    )
+    const modelNow = chosen.model || String(options.model ?? '').trim()
+    const effortNow = chosen.effort || String(options.effort ?? '').trim()
+
     const typed = await read($, draft)
     const skippedBy = await read($, pageAtom)
+    const fullId = await read($, fullAtom)
     const mine = all.filter(item => item.sid === sid || item.isPinned)
     const running = mine.filter(item => item.status === 'pending').length
 
@@ -531,24 +593,51 @@ export const register: Register = (on, options) => {
     // rows the pane has, so nothing needs scrolling to be pressed.
     const rows = e.props.scroll.bodyRows
     const columns = e.props.bodyColumns
-    const isFixed = options.fixedLayout !== false && rows >= MIN_FIXED_ROWS
-    const headerRows = columns < 60 ? 7 : 5
+    const full = fullId ? mine.find(item => item.id === fullId) : undefined
+    const isFixed = options.fixedLayout !== false && rows >= MIN_FIXED_ROWS && !full
+    // Rows the header takes once its buttons wrap: each label's cells plus the
+    // button's padding and the gap, over the width of the pane.
+    const wrapped = (labels: string[]) =>
+      Math.max(
+        1,
+        Math.ceil(
+          labels.reduce((sum, text) => sum + cells(text) + 4, 0) /
+            Math.max(10, columns),
+        ),
+      )
+    const headerRows =
+      wrapped(['btw', '待機中', '1-1 / 1', '^', 'v']) +
+      wrapped(['記憶 OFF', '直近 20 件', '履歴を消す', 'メインに反映']) +
+      wrapped(['モデル', ...modelRows.map(row => `[${row.label}]`)]) +
+      wrapped(['エフォート', ...EFFORT_OPTIONS.map(row => `[${row.label}]`)])
     const composerRows = (staged ? 6 : 0) + 4
     const room = Math.max(3, rows - headerRows - composerRows - 1)
+    // No answer is given more than the room left by the rest of an item.
+    const cap = Math.max(3, room - 9)
     const skipped = Math.min(skippedBy, Math.max(0, mine.length - 1))
     const view = isFixed
-      ? windowOf(mine, skipped, room, columns)
-      : { start: 0, end: mine.length, shown: mine }
+      ? windowOf(mine, skipped, room, columns, cap)
+      : { start: 0, end: mine.length, shown: full ? [full] : mine }
 
     const table = $.ui.resolve(e)
     const { Box, Text, Button, Markdown } = table
     const Input = 'Input' in table ? table.Input : undefined
   
+    // A press leaves the focus ring on the button, so the next click on the
+    // field would not take the keyboard: hand the ring to the field again.
+    const back = () => {
+      if (Input) void $.ui.focus({ requestId: PANE, key: 'ask' }).catch(() => undefined)
+    }
+    const then = (work: unknown) => {
+      void Promise.resolve(work).then(back, back)
+    }
+
     const submit = async (value: string) => {
       const q = value.trim()
       if (!q) return
       await update($, draft, () => '')
       await update($, pageAtom, () => 0)
+      await update($, fullAtom, () => '')
       await ask($, options, q)
     }
 
@@ -570,23 +659,20 @@ export const register: Register = (on, options) => {
         return { ...one, keep: KEEP_STEPS[(at + 1) % KEEP_STEPS.length] ?? 5 }
       })
 
-    const sessionModel = await $.session.model().catch(() => '')
-    const modelRows = modelOptions(
-      sessionModel,
-      chosen.model || String(options.model ?? '').trim(),
-    )
-    const modelNow = chosen.model || String(options.model ?? '').trim()
-    const effortNow = chosen.effort || String(options.effort ?? '').trim()
-
     const step = Math.max(1, view.shown.length)
     const older = () =>
       update($, pageAtom, n => Math.min(Math.max(0, mine.length - 1), n + step))
     const newer = () => update($, pageAtom, n => Math.max(0, n - step))
 
-    const history = view.shown.map(item => (
+    const history = view.shown.map(item => {
+      const shown = isFixed
+        ? clipAnswer(item.a, Math.max(12, columns - 2), cap)
+        : { text: item.a, isCut: false }
+
+      return (
       <Box key={`item:${item.id}`} flexDirection="column" marginBottom={1}>
         <Text bold color="suggestion">
-          {item.isPinned ? '📌 ' : ''}Q: {item.q}
+          {item.isPinned ? '[ピン] ' : ''}Q: {item.q}
         </Text>
         {item.quote ? (
           <Text dimColor>引用: {clip(item.quote.replace(/\s+/g, ' '), 120)}</Text>
@@ -595,17 +681,28 @@ export const register: Register = (on, options) => {
           A:
         </Text>
         {item.status === 'pending' ? (
-          <Text dimColor>考え中…</Text>
+          <Text dimColor>考え中...</Text>
         ) : item.status === 'error' ? (
-          <Text color="error">{item.a}</Text>
+          <Text color="error">{shown.text}</Text>
         ) : (
-          <Markdown text={item.a} />
+          <Markdown text={shown.text} />
         )}
+        {shown.isCut ? (
+          <Box flexDirection="row" gap={1}>
+            <Text dimColor>(以下省略)</Text>
+            <Button
+              key={`full:${item.id}`}
+              plain
+              label="全文を見る"
+              onPress={() => then(update($, fullAtom, () => item.id))}
+            />
+          </Box>
+        ) : null}
         <Box flexDirection="row" flexWrap="wrap" gap={1}>
           <Button
             key={`inj:${item.id}`}
             plain
-            label={item.isInjected ? '✓ メイン済' : '→メインへ'}
+            label={item.isInjected ? 'メイン済' : 'メインへ'}
             onPress={() => {
               void inject($, [item])
             }}
@@ -640,7 +737,8 @@ export const register: Register = (on, options) => {
           />
         </Box>
       </Box>
-    ))
+      )
+    })
 
     return (
       <Box flexDirection="column">
@@ -651,26 +749,29 @@ export const register: Register = (on, options) => {
             </Text>
             <Text dimColor>{running > 0 ? `実行中 ${running}` : '待機中'}</Text>
             {isFixed && mine.length > 0 ? (
-              <Text dimColor>{`${view.start + 1}–${view.end} / ${mine.length}`}</Text>
+              <Text dimColor>{`${view.start + 1}-${view.end} / ${mine.length}`}</Text>
+            ) : null}
+            {full ? (
+              <Button
+                key="full-back"
+                label="一覧に戻る"
+                onPress={() => then(update($, fullAtom, () => ''))}
+              />
             ) : null}
             {isFixed ? (
               <Button
                 key="older"
                 plain
-                label="▲"
-                onPress={() => {
-                  void older()
-                }}
+                label="^"
+                onPress={() => then(older())}
               />
             ) : null}
             {isFixed ? (
               <Button
                 key="newer"
                 plain
-                label="▼"
-                onPress={() => {
-                  void newer()
-                }}
+                label="v"
+                onPress={() => then(newer())}
               />
             ) : null}
           </Box>
@@ -678,27 +779,31 @@ export const register: Register = (on, options) => {
             <Button
               key="memory"
               label={m.isOn ? '記憶 ON' : '記憶 OFF'}
-              onPress={() => setMemory($, one => ({ ...one, isOn: !one.isOn }))}
+              onPress={() => then(setMemory($, one => ({ ...one, isOn: !one.isOn })))}
             />
-            <Button key="keep" label={`直近 ${m.keep} 件`} onPress={cycleKeep} />
+            <Button key="keep" label={`直近 ${m.keep} 件`} onPress={() => then(cycleKeep())} />
             <Button
               key="clear"
               label="履歴を消す"
-              onPress={() => {
-                void mutate($, every =>
-                  every.filter(item => item.sid !== sid || item.isPinned),
+              onPress={() =>
+                then(
+                  mutate($, every =>
+                    every.filter(item => item.sid !== sid || item.isPinned),
+                  ),
                 )
-              }}
+              }
             />
             <Button
               key="inject-all"
               label="メインに反映"
-              onPress={() => {
-                void inject(
-                  $,
-                  mine.filter(item => item.sid === sid),
+              onPress={() =>
+                then(
+                  inject(
+                    $,
+                    mine.filter(item => item.sid === sid),
+                  ),
                 )
-              }}
+              }
             />
           </Box>
           <Box flexDirection="row" flexWrap="wrap" gap={1}>
@@ -707,10 +812,10 @@ export const register: Register = (on, options) => {
               <Button
                 key={`model:${row.value}`}
                 plain
-                label={`${row.value === modelNow ? '●' : '○'} ${row.label}`}
-                onPress={() => {
-                  void update($, pick, one => ({ ...one, model: row.value }))
-                }}
+                label={row.value === modelNow ? `[${row.label}]` : row.label}
+                onPress={() =>
+                  then(update($, pick, one => ({ ...one, model: row.value })))
+                }
               />
             ))}
           </Box>
@@ -720,14 +825,13 @@ export const register: Register = (on, options) => {
               <Button
                 key={`effort:${row.value}`}
                 plain
-                label={`${row.value === effortNow ? '●' : '○'} ${row.value || '既定'}`}
-                onPress={() => {
-                  void update($, pick, one => ({ ...one, effort: row.value }))
-                }}
+                label={row.value === effortNow ? `[${row.label}]` : row.label}
+                onPress={() =>
+                  then(update($, pick, one => ({ ...one, effort: row.value })))
+                }
               />
             ))}
           </Box>
-          <Text dimColor>{'─'.repeat(Math.max(1, columns - 1))}</Text>
         </Box>
 
         {isFixed ? (
@@ -761,8 +865,8 @@ export const register: Register = (on, options) => {
                 <Button
                   key="unquote"
                   plain
-                  label="✕ 外す"
-                  onPress={() => update($, quote, () => '')}
+                  label="外す"
+                  onPress={() => then(update($, quote, () => ''))}
                 />
               </Box>
               <Text dimColor>{clip(staged.replace(/\s+/g, ' '), 120)}</Text>
@@ -775,12 +879,10 @@ export const register: Register = (on, options) => {
                 <Button
                   key="grab"
                   variant="primary"
-                  label="📎 選択を引用"
-                  onPress={() => {
-                    void grab()
-                  }}
+                  label="選択を引用"
+                  onPress={() => then(grab())}
                 />
-                <Text dimColor>← 文章を選択してから押す</Text>
+                <Text dimColor>(先に画面の文章を選択)</Text>
               </Box>
               <Box borderStyle="round" borderColor="promptBorder" paddingX={1}>
                 <Input

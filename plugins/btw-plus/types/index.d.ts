@@ -33,6 +33,7 @@ declare module 'claude-code' {
       draft: Shaped<string>
       quote: Shaped<string>
       page: Shaped<number>
+      full: Shaped<string>
       pick: Shaped<{ model: string; effort: string }>
     }
   }

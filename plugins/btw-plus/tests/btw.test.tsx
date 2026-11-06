@@ -112,8 +112,8 @@ test('the answer is drawn in the pane on every surface', async ($, on) => {
     const ui = await mount($, surface)
     expect((await ui.find({ type: 'Text', text: /全角でも動く/ }))?.text).toContain('Q: 全角でも動く')
     expect(await ui.find({ type: 'Markdown', text: /答えです/ })).toBeDefined()
-    // Mobile draws no field yet: it says so instead.
-    expect(Boolean(await ui.find({ key: 'ask' }))).toBe(surface !== 'mobile')
+    // The pane draws its field wherever the surface offers one.
+    expect(await ui.find({ key: 'ask' })).toBeDefined()
     await ui.unmount()
   }
 })
@@ -257,16 +257,16 @@ test('one answer is added to the main conversation, once', async ($, on) => {
   await ask($, clock, 'q: メインに入れたい')
 
   const ui = await mount($)
-  const inject = await ui.find({ type: 'Button', text: /^→メインへ$/ })
+  const inject = await ui.find({ type: 'Button', text: /^メインへ$/ })
   await ui.press({ key: inject.key })
 
   expect(appendedText(session)).toHaveLength(1)
   expect(appendedText(session)[0]).toContain('Q: メインに入れたい')
   expect(appendedText(session)[0]).toContain('A: 本線に入れる答え')
-  expect(await ui.find({ type: 'Button', text: /✓ メイン済/ })).toBeDefined()
+  expect(await ui.find({ type: 'Button', text: /メイン済/ })).toBeDefined()
 
   // Pressed again, nothing more is added.
-  const done = await ui.find({ type: 'Button', text: /✓ メイン済/ })
+  const done = await ui.find({ type: 'Button', text: /メイン済/ })
   await ui.press({ key: done.key })
   expect(appendedText(session)).toHaveLength(1)
   await ui.unmount()
@@ -332,12 +332,11 @@ test('the fixed layout shows the newest answers, and the arrows page back', asyn
     expect(await ui.find({ key })).toBeDefined()
   }
   expect(await ui.find({ type: 'Text', text: /質問8/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /質問7/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /質問1/ })).toBeUndefined()
 
   await ui.press({ key: 'older' })
   expect(await ui.find({ type: 'Text', text: /質問8/ })).toBeUndefined()
-  expect(await ui.find({ type: 'Text', text: /質問4/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /質問[4-7]/ })).toBeDefined()
 
   await ui.press({ key: 'newer' })
   expect(await ui.find({ type: 'Text', text: /質問8/ })).toBeDefined()
@@ -456,9 +455,36 @@ test('model and effort are rows of buttons, the chosen one marked', async ($, on
   for (const surface of ['terminal', 'desktop', 'vscode', 'mobile']) {
     const ui = await mount($, surface)
     await ui.press({ key: 'model:claude-test-9' })
-    expect(await ui.find({ type: 'Button', text: /● いま: claude-test-9/ })).toBeDefined()
+    expect(await ui.find({ type: 'Button', text: /\[いま: claude-test-9\]/ })).toBeDefined()
     await ui.press({ key: 'effort:high' })
-    expect(await ui.find({ type: 'Button', text: /● high/ })).toBeDefined()
+    expect(await ui.find({ type: 'Button', text: /\[high\]/ })).toBeDefined()
     await ui.unmount()
   }
+})
+
+test('a very long answer is cut to fit, and the whole of it opens on request', async ($, on) => {
+  const long = Array.from({ length: 80 }, (_, n) => `行${n + 1}の説明です`).join('\n')
+  const { clock } = world(on, { stdout: long })
+  await start($)
+  await ask($, clock, 'q: 長い答え')
+
+  const ui = await mount($)
+  expect(await ui.find({ type: 'Markdown', text: /行1の説明/ })).toBeDefined()
+  expect(await ui.find({ type: 'Markdown', text: /行80の説明/ })).toBeUndefined()
+  const more = await ui.find({ type: 'Button', text: /全文を見る/ })
+  await ui.press({ key: more.key })
+  expect(await ui.find({ type: 'Markdown', text: /行80の説明/ })).toBeDefined()
+  await ui.press({ key: 'full-back' })
+  expect(await ui.find({ type: 'Markdown', text: /行80の説明/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('one long line is cut by width rather than overflowing', async ($, on) => {
+  const { clock } = world(on, { stdout: 'あ'.repeat(3000) })
+  await start($)
+  await ask($, clock, 'q: 一行が長い')
+
+  const ui = await mount($)
+  expect(await ui.find({ type: 'Button', text: /全文を見る/ })).toBeDefined()
+  await ui.unmount()
 })
