@@ -390,43 +390,11 @@ async function currentSelection($: EngineInterface): Promise<string> {
 
 // A guess at the rows an item takes drawn `columns` wide, a little over so
 // that a fitted window is not cut.
-// Markdown spends more rows than its text (gaps, bullets, code), so an answer
-// is given fewer lines than the room it is cut to.
+// Markdown spends more rows than its text (gaps, bullets, code).
 const MARKDOWN_SLACK = 1.35
 
-// The part of `text` that fits `cap` rows of `width` cells, and whether it was cut.
-function clipAnswer(text: string, width: number, cap: number) {
-  const budget = Math.max(2, Math.floor(cap / MARKDOWN_SLACK))
-  const out: string[] = []
-  let used = 0
-
-  for (const line of text.split('\n')) {
-    const need = Math.max(1, Math.ceil(cells(line) / width))
-    if (used + need > budget) {
-      if (out.length === 0) {
-        // One line longer than the whole allowance: cut it by cells.
-        let kept = ''
-        let taken = 0
-        for (const char of Array.from(line)) {
-          const w = cells(char)
-          if (taken + w > width * budget) break
-          kept += char
-          taken += w
-        }
-        out.push(kept)
-      }
-
-      return { text: out.join('\n'), isCut: true }
-    }
-    out.push(line)
-    used += need
-  }
-
-  return { text, isCut: false }
-}
-
-// Rows an item takes at most, its answer cut to `cap` rows when `cap` is given.
-function itemRows(item: Item, columns: number, cap?: number): number {
+// Rows an item takes, answer included.
+function itemRows(item: Item, columns: number): number {
   const width = Math.max(12, columns - 2)
   const lines = (text: string) =>
     text
@@ -435,14 +403,7 @@ function itemRows(item: Item, columns: number, cap?: number): number {
   // The "A:" label, the buttons and a gap, then the question, quote and answer.
   let rows = lines(`Q: ${item.q}`) + 3
   if (item.quote) rows += 1
-  if (item.status === 'pending') {
-    rows += 1
-  } else if (cap === undefined) {
-    rows += Math.ceil(lines(item.a || ' ') * MARKDOWN_SLACK)
-  } else {
-    const shown = clipAnswer(item.a || ' ', width, cap)
-    rows += Math.ceil(lines(shown.text || ' ') * MARKDOWN_SLACK) + (shown.isCut ? 1 : 0)
-  }
+  rows += item.status === 'pending' ? 1 : Math.ceil(lines(item.a || ' ') * MARKDOWN_SLACK)
 
   return Math.ceil(rows * 1.1)
 }
@@ -454,7 +415,6 @@ function windowOf(
   skipped: number,
   room: number,
   columns: number,
-  cap: number,
 ) {
   const end = Math.max(0, all.length - skipped)
   let start = end
@@ -463,7 +423,7 @@ function windowOf(
   while (start > 0) {
     const item = all[start - 1]
     if (!item) break
-    const need = itemRows(item, columns, cap)
+    const need = itemRows(item, columns)
     if (used + need > room && start < end) break
     used += need
     start -= 1
@@ -503,7 +463,7 @@ async function draw(
   // rows the pane has, so nothing needs scrolling to be pressed.
   const { rows, columns } = site
   const where = await whereNow($, options)
-  const isFixed = options.fixedLayout !== false && rows >= MIN_FIXED_ROWS
+  const wantsFixed = options.fixedLayout !== false && rows >= MIN_FIXED_ROWS
   // Rows the header takes once its buttons wrap: each label's cells plus the
   // button's padding and the gap, over the width of the pane.
   const wrapped = (labels: string[]) =>
@@ -521,12 +481,14 @@ async function draw(
     wrapped(['エフォート', ...EFFORT_OPTIONS.map(row => `[${row.label}]`)])
   const composerRows = (staged ? 6 : 0) + 4
   const room = Math.max(3, rows - headerRows - composerRows - 1)
-  // No answer is given more than the room left by the rest of an item.
-  const cap = Math.max(3, room - 9)
   const skipped = Math.min(skippedBy, Math.max(0, mine.length - 1))
-  const view = isFixed
-    ? windowOf(mine, skipped, room, columns, cap)
-    : { start: 0, end: mine.length, shown: mine }
+  const fit = wantsFixed ? windowOf(mine, skipped, room, columns) : undefined
+  // Nothing is cut: an item taller than the room is drawn in the pane's own
+  // flow instead, where the whole pane scrolls.
+  const isFixed =
+    fit !== undefined &&
+    !(fit.shown.length === 1 && itemRows(fit.shown[0] as Item, columns) > room)
+  const view = fit && isFixed ? fit : { start: 0, end: mine.length, shown: mine }
 
   const { Box, Text, Button, Markdown } = table
   const Input = 'Input' in table ? table.Input : undefined
@@ -585,9 +547,7 @@ async function draw(
   const newer = () => update($, pageAtom, n => Math.max(0, n - step))
 
   const history = view.shown.map(item => {
-    const shown = isFixed
-      ? clipAnswer(item.a, Math.max(12, columns - 2), cap)
-      : { text: item.a, isCut: false }
+    const shown = { text: item.a }
 
     return (
     <Box key={`item:${item.id}`} flexDirection="column" marginBottom={1}>
@@ -607,9 +567,6 @@ async function draw(
       ) : (
         <Markdown text={shown.text} />
       )}
-      {shown.isCut ? (
-        <Text dimColor>(以下省略。全文は「回答をコピー」で)</Text>
-      ) : null}
       <Box flexDirection="row" flexWrap="wrap" gap={1}>
         <Button
           key={`inj:${item.id}`}

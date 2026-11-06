@@ -469,7 +469,7 @@ test('model and effort are rows of buttons, the chosen one marked', async ($, on
   }
 })
 
-test('a very long answer is cut to fit, with no button to open it', async ($, on) => {
+test('a very long answer is never cut: the pane falls back to its own flow', async ($, on) => {
   const long = Array.from({ length: 80 }, (_, n) => `行${n + 1}の説明です`).join('\n')
   const { clock } = world(on, { stdout: long })
   await start($)
@@ -477,19 +477,20 @@ test('a very long answer is cut to fit, with no button to open it', async ($, on
 
   const ui = await mount($)
   expect(await ui.find({ type: 'Markdown', text: /行1の説明/ })).toBeDefined()
-  expect(await ui.find({ type: 'Markdown', text: /行80の説明/ })).toBeUndefined()
-  expect(await ui.find({ type: 'Text', text: /以下省略/ })).toBeDefined()
-  expect(await ui.find({ type: 'Button', text: /全文を見る/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Markdown', text: /行80の説明/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /以下省略/ })).toBeUndefined()
+  // Outside the fixed layout there are no arrows.
+  expect(await ui.find({ key: 'older' })).toBeUndefined()
   await ui.unmount()
 })
 
-test('one long line is cut by width rather than overflowing', async ($, on) => {
-  const { clock } = world(on, { stdout: 'あ'.repeat(3000) })
+test('short answers keep the fixed layout', async ($, on) => {
+  const { clock } = world(on)
   await start($)
-  await ask($, clock, 'q: 一行が長い')
+  await ask($, clock, 'q: 短い')
 
   const ui = await mount($)
-  expect(await ui.find({ type: 'Text', text: /以下省略/ })).toBeDefined()
+  expect(await ui.find({ key: 'older' })).toBeDefined()
   await ui.unmount()
 })
 
