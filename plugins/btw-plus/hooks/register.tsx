@@ -707,11 +707,6 @@ async function draw(
       : {}),
   }
 
-  // A tree that fits the band whole is not scrolled by the engine, so its wheel
-  // would go to the conversation behind it. Rows past what the band shows make
-  // it a tree the band scrolls, and the scroll hook takes the moves.
-  const spare = site.isBand ? Math.max(2, (site.maxRows ?? site.rows) + 1 - site.rows) : 0
-
   return (
     <Box flexDirection="column">
       <Box flexDirection="column" {...frame}>
@@ -739,7 +734,7 @@ async function draw(
               <Button
                 key="older"
                 plain
-                label="^"
+                label={site.isBand ? "上へ" : "^"}
                 onPress={() => then(older())}
               />
             ) : null}
@@ -747,7 +742,7 @@ async function draw(
               <Button
                 key="newer"
                 plain
-                label="v"
+                label={site.isBand ? "下へ" : "v"}
                 onPress={() => then(newer())}
               />
             ) : null}
@@ -917,7 +912,6 @@ async function draw(
           )}
         </Box>
       </Box>
-      {spare > 0 ? <Box height={spare} /> : null}
     </Box>
   )
 }
