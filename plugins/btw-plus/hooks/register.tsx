@@ -371,6 +371,7 @@ async function ask($: EngineInterface, options: PluginOptions, q: string) {
 
   await mutate($, all => [...all, item])
   await update($, quote, () => '')
+  await update($, pageAtom, () => 0)
   await show($, options)
   // The fork outlives this dispatch, so it runs from a timer of its own.
   $.clock.after(0, () => {
@@ -390,46 +391,72 @@ async function currentSelection($: EngineInterface): Promise<string> {
 
 // A guess at the rows an item takes drawn `columns` wide, a little over so
 // that a fitted window is not cut.
-// Markdown spends more rows than its text (gaps, bullets, code).
-const MARKDOWN_SLACK = 1.35
+// One drawn line of the history. The history is scrolled by these lines, not by
+// the engine, so the controls and the field above and below it never move.
+type Entry = {
+  key: string
+  kind: 'q' | 'quote' | 'label' | 'pending' | 'ln' | 'error' | 'foot' | 'gap'
+  item: Item
+  text: string
+  rows: number
+}
 
-// Rows an item takes, answer included.
-function itemRows(item: Item, columns: number): number {
+function entriesOf(all: Item[], columns: number): Entry[] {
   const width = Math.max(12, columns - 2)
-  const lines = (text: string) =>
+  const rowsOf = (text: string) =>
     text
       .split('\n')
       .reduce((sum, line) => sum + Math.max(1, Math.ceil(cells(line) / width)), 0)
-  // The "A:" label, the buttons and a gap, then the question, quote and answer.
-  let rows = lines(`Q: ${item.q}`) + 3
-  if (item.quote) rows += 1
-  rows += item.status === 'pending' ? 1 : Math.ceil(lines(item.a || ' ') * MARKDOWN_SLACK)
+  const out: Entry[] = []
 
-  return Math.ceil(rows * 1.1)
+  for (const item of all) {
+    const add = (kind: Entry['kind'], text: string, rows: number) => {
+      out.push({ key: `${item.id}:${out.length}`, kind, item, text, rows })
+    }
+    const head = `${item.isPinned ? '[ピン] ' : ''}Q: ${item.q}`
+    add('q', head, rowsOf(head))
+    if (item.quote) {
+      const quoted = `引用: ${clip(item.quote.replace(/\s+/g, ' '), 120)}`
+      add('quote', quoted, rowsOf(quoted))
+    }
+    add('label', 'A:', 1)
+    if (item.status === 'pending') {
+      add('pending', '考え中...', 1)
+    } else {
+      for (const line of (item.a || ' ').split('\n')) {
+        add(item.status === 'error' ? 'error' : 'ln', line, rowsOf(line))
+      }
+    }
+    add('foot', '', columns < 60 ? 3 : 2)
+    add('gap', '', 1)
+  }
+
+  return out
 }
 
-// The newest items that fit `room` rows, ending `skipped` items before the
-// newest; always at least one.
-function windowOf(
-  all: Item[],
-  skipped: number,
-  room: number,
-  columns: number,
-) {
-  const end = Math.max(0, all.length - skipped)
+// The lines that fit `room` rows, ending `fromEnd` lines before the last one;
+// always at least one.
+function windowOf(list: Entry[], fromEnd: number, room: number) {
+  // Scrolling stops once the first line is at the top of the window.
+  let floor = 0
+  let filled = 0
+  while (floor < list.length && filled < room) {
+    filled += (list[floor] as Entry).rows
+    floor += 1
+  }
+  const end = Math.max(1, floor, list.length - Math.max(0, fromEnd))
   let start = end
   let used = 0
 
   while (start > 0) {
-    const item = all[start - 1]
-    if (!item) break
-    const need = itemRows(item, columns)
-    if (used + need > room && start < end) break
-    used += need
+    const entry = list[start - 1]
+    if (!entry) break
+    if (used + entry.rows > room && start < end) break
+    used += entry.rows
     start -= 1
   }
 
-  return { start, end, shown: all.slice(start, end) }
+  return { start, end: Math.min(end, list.length), shown: list.slice(start, end) }
 }
 
 // ---- the module -------------------------------------------------------------
@@ -481,14 +508,12 @@ async function draw(
     wrapped(['エフォート', ...EFFORT_OPTIONS.map(row => `[${row.label}]`)])
   const composerRows = (staged ? 6 : 0) + 4
   const room = Math.max(3, rows - headerRows - composerRows - 1)
-  const skipped = Math.min(skippedBy, Math.max(0, mine.length - 1))
-  const fit = wantsFixed ? windowOf(mine, skipped, room, columns) : undefined
-  // Nothing is cut: an item taller than the room is drawn in the pane's own
-  // flow instead, where the whole pane scrolls.
-  const isFixed =
-    fit !== undefined &&
-    !(fit.shown.length === 1 && itemRows(fit.shown[0] as Item, columns) > room)
-  const view = fit && isFixed ? fit : { start: 0, end: mine.length, shown: mine }
+  const isFixed = wantsFixed
+  const list = entriesOf(mine, columns)
+  const fromEnd = Math.min(Math.max(0, skippedBy), Math.max(0, list.length - 1))
+  const view = isFixed
+    ? windowOf(list, fromEnd, room)
+    : { start: 0, end: list.length, shown: list }
 
   const { Box, Text, Button, Markdown } = table
   const Input = 'Input' in table ? table.Input : undefined
@@ -541,73 +566,108 @@ async function draw(
       return { ...one, keep: KEEP_STEPS[(at + 1) % KEEP_STEPS.length] ?? 5 }
     })
 
-  const step = Math.max(1, view.shown.length)
+  // The arrows move the history about half a window; the wheel moves it by
+  // its ticks (the ui.scroll hook below).
+  const step = Math.max(3, Math.floor(room / 2))
   const older = () =>
-    update($, pageAtom, n => Math.min(Math.max(0, mine.length - 1), n + step))
+    update($, pageAtom, n => Math.min(Math.max(0, list.length - 1), n + step))
   const newer = () => update($, pageAtom, n => Math.max(0, n - step))
 
-  const history = view.shown.map(item => {
-    const shown = { text: item.a }
-
-    return (
-    <Box key={`item:${item.id}`} flexDirection="column" marginBottom={1}>
-      <Text bold color="suggestion">
-        {item.isPinned ? '[ピン] ' : ''}Q: {item.q}
-      </Text>
-      {item.quote ? (
-        <Text dimColor>引用: {clip(item.quote.replace(/\s+/g, ' '), 120)}</Text>
-      ) : null}
-      <Text bold color="claude">
-        A:
-      </Text>
-      {item.status === 'pending' ? (
-        <Text dimColor>考え中...</Text>
-      ) : item.status === 'error' ? (
-        <Text color="error">{shown.text}</Text>
-      ) : (
-        <Markdown text={shown.text} />
-      )}
-      <Box flexDirection="row" flexWrap="wrap" gap={1}>
-        <Button
-          key={`inj:${item.id}`}
-          plain
-          label={item.isInjected ? 'メイン済' : 'メインへ'}
-          onPress={() => {
-            void inject($, [item])
-          }}
-        />
-        <Button
-          key={`pin:${item.id}`}
-          plain
-          label={item.isPinned ? 'ピン解除' : 'ピン留め'}
-          onPress={() => {
-            void mutate($, every =>
-              every.map(one =>
-                one.id === item.id ? { ...one, isPinned: !one.isPinned } : one,
-              ),
-            )
-          }}
-        />
-        <Button
-          key={`copy:${item.id}`}
-          plain
-          label="回答をコピー"
-          onPress={press => {
-            void $.ui.copy({ text: item.a, surface: press.surface })
-          }}
-        />
-        <Button
-          key={`del:${item.id}`}
-          plain
-          label="削除"
-          onPress={() => {
-            void mutate($, every => every.filter(one => one.id !== item.id))
-          }}
-        />
-      </Box>
+  const footer = (item: Item) => (
+    <Box key={`foot:${item.id}`} flexDirection="row" flexWrap="wrap" gap={1}>
+      <Button
+        key={`inj:${item.id}`}
+        plain
+        label={item.isInjected ? 'メイン済' : 'メインへ'}
+        onPress={() => {
+          void inject($, [item])
+        }}
+      />
+      <Button
+        key={`pin:${item.id}`}
+        plain
+        label={item.isPinned ? 'ピン解除' : 'ピン留め'}
+        onPress={() => {
+          void mutate($, every =>
+            every.map(one =>
+              one.id === item.id ? { ...one, isPinned: !one.isPinned } : one,
+            ),
+          )
+        }}
+      />
+      <Button
+        key={`copy:${item.id}`}
+        plain
+        label="回答をコピー"
+        onPress={press => {
+          void $.ui.copy({ text: item.a, surface: press.surface })
+        }}
+      />
+      <Button
+        key={`del:${item.id}`}
+        plain
+        label="削除"
+        onPress={() => {
+          void mutate($, every => every.filter(one => one.id !== item.id))
+        }}
+      />
     </Box>
+  )
+
+  // Consecutive answer lines are drawn as one Markdown block.
+  const history: JSX.Element[] = []
+  let run: Entry[] = []
+  const flush = () => {
+    if (run.length === 0) return
+    const first = run[0] as Entry
+    history.push(
+      <Markdown key={`md:${first.key}`} text={run.map(line => line.text).join('\n')} />,
     )
-  })
+    run = []
+  }
+  for (const entry of view.shown) {
+    if (entry.kind === 'ln') {
+      run.push(entry)
+      continue
+    }
+    flush()
+    if (entry.kind === 'q') {
+      history.push(
+        <Text key={entry.key} bold color="suggestion">
+          {entry.text}
+        </Text>,
+      )
+    } else if (entry.kind === 'quote') {
+      history.push(
+        <Text key={entry.key} dimColor>
+          {entry.text}
+        </Text>,
+      )
+    } else if (entry.kind === 'label') {
+      history.push(
+        <Text key={entry.key} bold color="claude">
+          A:
+        </Text>,
+      )
+    } else if (entry.kind === 'pending') {
+      history.push(
+        <Text key={entry.key} dimColor>
+          {entry.text}
+        </Text>,
+      )
+    } else if (entry.kind === 'error') {
+      history.push(
+        <Text key={entry.key} color="error">
+          {entry.text}
+        </Text>,
+      )
+    } else if (entry.kind === 'foot') {
+      history.push(footer(entry.item))
+    } else {
+      history.push(<Text key={entry.key}> </Text>)
+    }
+  }
+  flush()
 
   return (
     <Box flexDirection="column">
@@ -617,9 +677,6 @@ async function draw(
             btw
           </Text>
           <Text dimColor>{running > 0 ? `実行中 ${running}` : '待機中'}</Text>
-          {isFixed && mine.length > 0 ? (
-            <Text dimColor>{`${view.start + 1}-${view.end} / ${mine.length}`}</Text>
-          ) : null}
           <Button
             key="where"
             plain
@@ -785,6 +842,36 @@ async function draw(
   )
 }
 
+// Moves the history by `by` lines (negative: toward older ones); false when the
+// fixed layout is not in force and the engine should scroll as it always does.
+async function scrollHistory(
+  $: EngineInterface,
+  options: PluginOptions,
+  by: number,
+  bodyRows: number,
+): Promise<boolean> {
+  if (options.fixedLayout === false || bodyRows < MIN_FIXED_ROWS) return false
+  // How many lines the history has (the same count entriesOf makes), so the
+  // wheel cannot be turned past the top and then have to be turned back.
+  const sid = await $.session.id()
+  const mine = (await read($, items)).filter(
+    item => item.sid === sid || item.isPinned,
+  )
+  const count = mine.reduce(
+    (sum, item) =>
+      sum +
+      4 +
+      (item.quote ? 1 : 0) +
+      (item.status === 'pending' ? 1 : (item.a || ' ').split('\n').length),
+    0,
+  )
+  await update($, pageAtom, n =>
+    Math.min(Math.max(0, count - 1), Math.max(0, n - by)),
+  )
+
+  return true
+}
+
 export const register: Register = (on, options) => {
   const prefixes = list(options.prefixes, DEFAULT_PREFIXES)
 
@@ -917,4 +1004,13 @@ export const register: Register = (on, options) => {
       isBand: true,
     })
   })
+
+  // The wheel and scroll keys move the history inside the fixed layout, not the
+  // whole pane: take the move, keep the header and the field where they are.
+  on('ui.scroll', { component: 'Pane', requestId: PANE }, async ($, e, next) =>
+    (await scrollHistory($, options, e.by, e.bodyRows)) ? {} : next(e),
+  )
+  on('ui.scroll', { component: 'AbovePrompt' }, async ($, e, next) =>
+    (await scrollHistory($, options, e.by, e.bodyRows)) ? {} : next(e),
+  )
 }

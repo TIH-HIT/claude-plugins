@@ -469,18 +469,28 @@ test('model and effort are rows of buttons, the chosen one marked', async ($, on
   }
 })
 
-test('a very long answer is never cut: the pane falls back to its own flow', async ($, on) => {
+test('a very long answer is never cut: the controls stay and the history scrolls', async ($, on) => {
   const long = Array.from({ length: 80 }, (_, n) => `行${n + 1}の説明です`).join('\n')
   const { clock } = world(on, { stdout: long })
   await start($)
   await ask($, clock, 'q: 長い答え')
 
   const ui = await mount($)
-  expect(await ui.find({ type: 'Markdown', text: /行1の説明/ })).toBeDefined()
+  // The newest lines show, the controls and the field are all there.
   expect(await ui.find({ type: 'Markdown', text: /行80の説明/ })).toBeDefined()
+  expect(await ui.find({ type: 'Markdown', text: /行1の説明/ })).toBeUndefined()
+  for (const key of ['memory', 'keep', 'clear', 'inject-all', 'grab', 'ask']) {
+    expect(await ui.find({ key })).toBeDefined()
+  }
   expect(await ui.find({ type: 'Text', text: /以下省略/ })).toBeUndefined()
-  // Outside the fixed layout there are no arrows.
-  expect(await ui.find({ key: 'older' })).toBeUndefined()
+
+  // Paging up reaches the first line; the controls never moved.
+  for (let n = 0; n < 12; n += 1) await ui.press({ key: 'older' })
+  expect(await ui.find({ type: 'Markdown', text: /行1の説明/ })).toBeDefined()
+  expect(await ui.find({ key: 'ask' })).toBeDefined()
+
+  for (let n = 0; n < 12; n += 1) await ui.press({ key: 'newer' })
+  expect(await ui.find({ type: 'Markdown', text: /行80の説明/ })).toBeDefined()
   await ui.unmount()
 })
 
