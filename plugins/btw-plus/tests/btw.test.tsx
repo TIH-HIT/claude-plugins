@@ -35,6 +35,13 @@ function world(on, options = {}) {
 
     return { value: { isPlaced: true } }
   })
+  on('ui.close', () => ({ value: undefined }))
+  // The engine's own drawing of a site no plugin claims: nothing.
+  on('ui.render', ($, e) => {
+    const { Box } = $.ui.resolve(e)
+
+    return <Box />
+  })
   on('ui.panes', () => ({
     value: [
       { id: 'btw', title: 'btw', isShown: true, isFocused: false, isPlaced: true },
@@ -454,15 +461,15 @@ test('model and effort are rows of buttons, the chosen one marked', async ($, on
 
   for (const surface of ['terminal', 'desktop', 'vscode', 'mobile']) {
     const ui = await mount($, surface)
-    await ui.press({ key: 'model:claude-test-9' })
-    expect(await ui.find({ type: 'Button', text: /\[いま: claude-test-9\]/ })).toBeDefined()
+    await ui.press({ key: 'model:opus' })
+    expect(await ui.find({ type: 'Button', text: /\[opus\(最新\)\]/ })).toBeDefined()
     await ui.press({ key: 'effort:high' })
     expect(await ui.find({ type: 'Button', text: /\[high\]/ })).toBeDefined()
     await ui.unmount()
   }
 })
 
-test('a very long answer is cut to fit, and the whole of it opens on request', async ($, on) => {
+test('a very long answer is cut to fit, with no button to open it', async ($, on) => {
   const long = Array.from({ length: 80 }, (_, n) => `行${n + 1}の説明です`).join('\n')
   const { clock } = world(on, { stdout: long })
   await start($)
@@ -471,11 +478,8 @@ test('a very long answer is cut to fit, and the whole of it opens on request', a
   const ui = await mount($)
   expect(await ui.find({ type: 'Markdown', text: /行1の説明/ })).toBeDefined()
   expect(await ui.find({ type: 'Markdown', text: /行80の説明/ })).toBeUndefined()
-  const more = await ui.find({ type: 'Button', text: /全文を見る/ })
-  await ui.press({ key: more.key })
-  expect(await ui.find({ type: 'Markdown', text: /行80の説明/ })).toBeDefined()
-  await ui.press({ key: 'full-back' })
-  expect(await ui.find({ type: 'Markdown', text: /行80の説明/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /以下省略/ })).toBeDefined()
+  expect(await ui.find({ type: 'Button', text: /全文を見る/ })).toBeUndefined()
   await ui.unmount()
 })
 
@@ -485,6 +489,69 @@ test('one long line is cut by width rather than overflowing', async ($, on) => {
   await ask($, clock, 'q: 一行が長い')
 
   const ui = await mount($)
-  expect(await ui.find({ type: 'Button', text: /全文を見る/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /以下省略/ })).toBeDefined()
   await ui.unmount()
+})
+
+const BAND = {
+  plugin: 'btw-plus',
+  component: 'AbovePrompt',
+  requestId: 'band',
+  props: {
+    hasSurvey: false,
+    isWorking: false,
+    maxRows: 20,
+    bodyColumns: 100,
+    scroll: { offset: 0, bodyRows: 19 },
+    view: {},
+  },
+}
+const mountBand = ($, surface = 'terminal', props = {}) =>
+  $.ui.mount({ ...BAND, props: { ...BAND.props, ...props }, surface })
+
+test('with location band, answers are drawn above the prompt and no pane opens', { options: { location: 'band' } }, async ($, on) => {
+  const { opens, clock } = world(on)
+  await start($)
+
+  const before = await mountBand($)
+  expect(await before.find({ type: 'Markdown', text: /答えです/ })).toBeUndefined()
+  await before.unmount()
+
+  await ask($, clock, 'q: 下に出す')
+  expect(opens).toHaveLength(0)
+
+  const ui = await mountBand($)
+  expect(await ui.find({ type: 'Text', text: /Q: 下に出す/ })).toBeDefined()
+  expect(await ui.find({ type: 'Markdown', text: /答えです/ })).toBeDefined()
+  expect(await ui.find({ key: 'ask' })).toBeDefined()
+
+  await ui.press({ key: 'band-close' })
+  expect(await ui.find({ type: 'Markdown', text: /答えです/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('a survey holds the band: the history stays out of its way', { options: { location: 'band' } }, async ($, on) => {
+  const { clock } = world(on)
+  await start($)
+  await ask($, clock, 'q: 調査中')
+
+  const ui = await mountBand($, 'terminal', { hasSurvey: true })
+  expect(await ui.find({ type: 'Markdown', text: /答えです/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('the pane button moves the history to the band and back', async ($, on) => {
+  const { opens, clock } = world(on)
+  await start($)
+  await ask($, clock, 'q: 移動する')
+  const first = opens.length
+
+  const pane = await mount($)
+  await pane.press({ key: 'where' })
+  await pane.unmount()
+  const band = await mountBand($)
+  expect(await band.find({ type: 'Markdown', text: /答えです/ })).toBeDefined()
+  await band.press({ key: 'where' })
+  await band.unmount()
+  expect(opens.length).toBe(first + 1)
 })

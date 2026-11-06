@@ -20,11 +20,10 @@ const ANSWER_IN_MEMORY = 1200
 const ANSWER_IN_MAIN = 8000
 const KEEP_STEPS = [0, 3, 5, 10, 20]
 // Aliases are resolved by Claude Code itself, so they follow its newest models
-// with no list kept here; the session's own model is added at draw time.
+// with no list kept here.
 const MODEL_ALIASES = ['fable', 'opus', 'sonnet', 'haiku']
-const modelOptions = (current: string, extra: string) => {
+const modelOptions = (extra: string) => {
   const rows = [{ value: '', label: '既定' }]
-  if (current) rows.push({ value: current, label: `いま: ${current}` })
   for (const alias of MODEL_ALIASES) {
     rows.push({ value: alias, label: `${alias}(最新)` })
   }
@@ -68,9 +67,13 @@ const pick = atom(
   { model: '', effort: '' },
   { shape: 'pick-1' },
 )
-// The item shown whole, in the pane's own flow, instead of the fixed layout.
-const fullAtom = atom({ plugin: 'btw-plus', key: 'full' } as const, '', {
-  shape: 'full-1',
+// Where the history is drawn: '' follows the setting, then 'pane' or 'band'
+// (the strip right above the prompt, as wide as the conversation).
+const whereAtom = atom({ plugin: 'btw-plus', key: 'where' } as const, '', {
+  shape: 'where-1',
+})
+const bandAtom = atom({ plugin: 'btw-plus', key: 'band' } as const, false, {
+  shape: 'band-1',
 })
 const pageAtom = atom({ plugin: 'btw-plus', key: 'page' } as const, 0, {
   shape: 'page-1',
@@ -301,7 +304,9 @@ async function runFork($: EngineInterface, options: PluginOptions, fork: Fork) {
   )
 
   const panes = await $.ui.panes()
-  if (panes.some(pane => pane.id === PANE && pane.isPlaced)) {
+  const isBandOpen =
+    (await whereNow($, options)) === 'band' && (await read($, bandAtom))
+  if (isBandOpen || panes.some(pane => pane.id === PANE && pane.isPlaced)) {
     $.ui.toast(status === 'done' ? 'btw: 回答が届きました' : 'btw: 失敗しました')
   } else {
     // No surface draws the pane: the answer goes to the transcript instead.
@@ -325,6 +330,18 @@ async function runFork($: EngineInterface, options: PluginOptions, fork: Fork) {
 
 // The question goes with whatever is in the quote slot, and only that: a
 // selection the person never put there is not taken.
+const whereNow = async ($: EngineInterface, options: PluginOptions) =>
+  (await read($, whereAtom)) || (options.location === 'band' ? 'band' : 'pane')
+
+// Draws the history where the person wants it: in the band, or in the pane.
+async function show($: EngineInterface, options: PluginOptions, focus = false) {
+  if ((await whereNow($, options)) === 'band') {
+    await update($, bandAtom, () => true)
+  } else {
+    await $.ui.open({ ...paneArgs(options), ...(focus ? { focus: true as const } : {}) })
+  }
+}
+
 async function ask($: EngineInterface, options: PluginOptions, q: string) {
   const sid = await $.session.id()
   const now = await $.clock.now()
@@ -354,7 +371,7 @@ async function ask($: EngineInterface, options: PluginOptions, q: string) {
 
   await mutate($, all => [...all, item])
   await update($, quote, () => '')
-  await $.ui.open(paneArgs(options))
+  await show($, options)
   // The fork outlives this dispatch, so it runs from a timer of its own.
   $.clock.after(0, () => {
     void runFork($, options, fork)
@@ -457,6 +474,360 @@ function windowOf(
 
 // ---- the module -------------------------------------------------------------
 
+// ---- the history, drawn in the pane or in the band --------------------------
+
+async function draw(
+  $: EngineInterface,
+  options: PluginOptions,
+  table: ReturnType<EngineInterface['ui']['resolve']>,
+  site: { rows: number; columns: number; id: string; isBand: boolean },
+) {
+  const sid = await $.session.id()
+  const all = await read($, items)
+  const m = await read($, memory)
+  const staged = await read($, quote)
+  const chosen = await read($, pick)
+  const modelRows = modelOptions(
+    chosen.model || String(options.model ?? '').trim(),
+  )
+  const modelNow = chosen.model || String(options.model ?? '').trim()
+  const effortNow = chosen.effort || String(options.effort ?? '').trim()
+
+  const typed = await read($, draft)
+  const skippedBy = await read($, pageAtom)
+  const mine = all.filter(item => item.sid === sid || item.isPinned)
+  const running = mine.filter(item => item.status === 'pending').length
+
+  // The fixed layout: the controls on top, the newest items in the middle
+  // (older ones by the arrows), the composer at the bottom, all inside the
+  // rows the pane has, so nothing needs scrolling to be pressed.
+  const { rows, columns } = site
+  const where = await whereNow($, options)
+  const isFixed = options.fixedLayout !== false && rows >= MIN_FIXED_ROWS
+  // Rows the header takes once its buttons wrap: each label's cells plus the
+  // button's padding and the gap, over the width of the pane.
+  const wrapped = (labels: string[]) =>
+    Math.max(
+      1,
+      Math.ceil(
+        labels.reduce((sum, text) => sum + cells(text) + 4, 0) /
+          Math.max(10, columns),
+      ),
+    )
+  const headerRows =
+    wrapped(['btw', '待機中', '1-1 / 1', '^', 'v']) +
+    wrapped(['記憶 OFF', '直近 20 件', '履歴を消す', 'メインに反映']) +
+    wrapped(['モデル', ...modelRows.map(row => `[${row.label}]`)]) +
+    wrapped(['エフォート', ...EFFORT_OPTIONS.map(row => `[${row.label}]`)])
+  const composerRows = (staged ? 6 : 0) + 4
+  const room = Math.max(3, rows - headerRows - composerRows - 1)
+  // No answer is given more than the room left by the rest of an item.
+  const cap = Math.max(3, room - 9)
+  const skipped = Math.min(skippedBy, Math.max(0, mine.length - 1))
+  const view = isFixed
+    ? windowOf(mine, skipped, room, columns, cap)
+    : { start: 0, end: mine.length, shown: mine }
+
+  const { Box, Text, Button, Markdown } = table
+  const Input = 'Input' in table ? table.Input : undefined
+
+  // A press leaves the focus ring on the button, so the next click on the
+  // field would not take the keyboard: hand the ring to the field again.
+  const back = () => {
+    if (Input) void $.ui.focus({ requestId: site.id, key: 'ask' }).catch(() => undefined)
+  }
+  const then = (work: unknown) => {
+    void Promise.resolve(work).then(back, back)
+  }
+
+  // Moves the history between the pane (beside) and the band (below).
+  const move = async () => {
+    if (where === 'band') {
+      await update($, whereAtom, () => 'pane')
+      await update($, bandAtom, () => false)
+      await $.ui.open(paneArgs(options))
+    } else {
+      await update($, whereAtom, () => 'band')
+      await update($, bandAtom, () => true)
+      await $.ui.close({ id: PANE })
+    }
+  }
+
+  const submit = async (value: string) => {
+    const q = value.trim()
+    if (!q) return
+    await update($, draft, () => '')
+    await update($, pageAtom, () => 0)
+    await ask($, options, q)
+  }
+
+  // The quote is taken only here, by this press: a selection alone is not.
+  const grab = async () => {
+    const selected = (await currentSelection($)).trim()
+    if (!selected) {
+      $.ui.toast('選択範囲がありません。画面の文章をドラッグ選択してから押してください')
+
+      return
+    }
+    await update($, quote, () => clip(selected, 8000))
+  }
+
+  const cycleKeep = () =>
+    setMemory($, one => {
+      const at = KEEP_STEPS.indexOf(one.keep)
+
+      return { ...one, keep: KEEP_STEPS[(at + 1) % KEEP_STEPS.length] ?? 5 }
+    })
+
+  const step = Math.max(1, view.shown.length)
+  const older = () =>
+    update($, pageAtom, n => Math.min(Math.max(0, mine.length - 1), n + step))
+  const newer = () => update($, pageAtom, n => Math.max(0, n - step))
+
+  const history = view.shown.map(item => {
+    const shown = isFixed
+      ? clipAnswer(item.a, Math.max(12, columns - 2), cap)
+      : { text: item.a, isCut: false }
+
+    return (
+    <Box key={`item:${item.id}`} flexDirection="column" marginBottom={1}>
+      <Text bold color="suggestion">
+        {item.isPinned ? '[ピン] ' : ''}Q: {item.q}
+      </Text>
+      {item.quote ? (
+        <Text dimColor>引用: {clip(item.quote.replace(/\s+/g, ' '), 120)}</Text>
+      ) : null}
+      <Text bold color="claude">
+        A:
+      </Text>
+      {item.status === 'pending' ? (
+        <Text dimColor>考え中...</Text>
+      ) : item.status === 'error' ? (
+        <Text color="error">{shown.text}</Text>
+      ) : (
+        <Markdown text={shown.text} />
+      )}
+      {shown.isCut ? (
+        <Text dimColor>(以下省略。全文は「回答をコピー」で)</Text>
+      ) : null}
+      <Box flexDirection="row" flexWrap="wrap" gap={1}>
+        <Button
+          key={`inj:${item.id}`}
+          plain
+          label={item.isInjected ? 'メイン済' : 'メインへ'}
+          onPress={() => {
+            void inject($, [item])
+          }}
+        />
+        <Button
+          key={`pin:${item.id}`}
+          plain
+          label={item.isPinned ? 'ピン解除' : 'ピン留め'}
+          onPress={() => {
+            void mutate($, every =>
+              every.map(one =>
+                one.id === item.id ? { ...one, isPinned: !one.isPinned } : one,
+              ),
+            )
+          }}
+        />
+        <Button
+          key={`copy:${item.id}`}
+          plain
+          label="回答をコピー"
+          onPress={press => {
+            void $.ui.copy({ text: item.a, surface: press.surface })
+          }}
+        />
+        <Button
+          key={`del:${item.id}`}
+          plain
+          label="削除"
+          onPress={() => {
+            void mutate($, every => every.filter(one => one.id !== item.id))
+          }}
+        />
+      </Box>
+    </Box>
+    )
+  })
+
+  return (
+    <Box flexDirection="column">
+      <Box flexDirection="column" flexShrink={0}>
+        <Box flexDirection="row" flexWrap="wrap" gap={1}>
+          <Text bold color="claude">
+            btw
+          </Text>
+          <Text dimColor>{running > 0 ? `実行中 ${running}` : '待機中'}</Text>
+          {isFixed && mine.length > 0 ? (
+            <Text dimColor>{`${view.start + 1}-${view.end} / ${mine.length}`}</Text>
+          ) : null}
+          <Button
+            key="where"
+            plain
+            label={where === 'band' ? '表示: 下' : '表示: 横'}
+            onPress={() => then(move())}
+          />
+          {site.isBand ? (
+            <Button
+              key="band-close"
+              plain
+              label="閉じる"
+              onPress={() => update($, bandAtom, () => false)}
+            />
+          ) : null}
+          {isFixed ? (
+            <Button
+              key="older"
+              plain
+              label="^"
+              onPress={() => then(older())}
+            />
+          ) : null}
+          {isFixed ? (
+            <Button
+              key="newer"
+              plain
+              label="v"
+              onPress={() => then(newer())}
+            />
+          ) : null}
+        </Box>
+        <Box flexDirection="row" flexWrap="wrap" gap={1}>
+          <Button
+            key="memory"
+            label={m.isOn ? '記憶 ON' : '記憶 OFF'}
+            onPress={() => then(setMemory($, one => ({ ...one, isOn: !one.isOn })))}
+          />
+          <Button key="keep" label={`直近 ${m.keep} 件`} onPress={() => then(cycleKeep())} />
+          <Button
+            key="clear"
+            label="履歴を消す"
+            onPress={() =>
+              then(
+                mutate($, every =>
+                  every.filter(item => item.sid !== sid || item.isPinned),
+                ),
+              )
+            }
+          />
+          <Button
+            key="inject-all"
+            label="メインに反映"
+            onPress={() =>
+              then(
+                inject(
+                  $,
+                  mine.filter(item => item.sid === sid),
+                ),
+              )
+            }
+          />
+        </Box>
+        <Box flexDirection="row" flexWrap="wrap" gap={1}>
+          <Text dimColor>モデル</Text>
+          {modelRows.map(row => (
+            <Button
+              key={`model:${row.value}`}
+              plain
+              label={row.value === modelNow ? `[${row.label}]` : row.label}
+              onPress={() =>
+                then(update($, pick, one => ({ ...one, model: row.value })))
+              }
+            />
+          ))}
+        </Box>
+        <Box flexDirection="row" flexWrap="wrap" gap={1}>
+          <Text dimColor>エフォート</Text>
+          {EFFORT_OPTIONS.map(row => (
+            <Button
+              key={`effort:${row.value}`}
+              plain
+              label={row.value === effortNow ? `[${row.label}]` : row.label}
+              onPress={() =>
+                then(update($, pick, one => ({ ...one, effort: row.value })))
+              }
+            />
+          ))}
+        </Box>
+      </Box>
+
+      {isFixed ? (
+        <Box
+          flexDirection="column"
+          justifyContent="flex-end"
+          height={room}
+          overflow="hidden"
+        >
+          {history}
+        </Box>
+      ) : (
+        <Box flexDirection="column">
+          {mine.length === 0 ? null : history}
+        </Box>
+      )}
+
+      {mine.length === 0 ? (
+        <Text dimColor>
+          まだ質問がありません。下の欄、またはプロンプトの「q: 質問」で聞けます。
+        </Text>
+      ) : null}
+
+      <Box flexDirection="column" flexShrink={0}>
+        {staged ? (
+          <Box flexDirection="column" borderStyle="round" borderColor="claude" paddingX={1}>
+            <Box flexDirection="row" gap={1}>
+              <Text bold color="claude">
+                引用中
+              </Text>
+              <Button
+                key="unquote"
+                plain
+                label="外す"
+                onPress={() => then(update($, quote, () => ''))}
+              />
+            </Box>
+            <Text dimColor>{clip(staged.replace(/\s+/g, ' '), 120)}</Text>
+          </Box>
+        ) : null}
+
+        {Input ? (
+          <Box flexDirection="column">
+            <Box flexDirection="row" gap={1}>
+              <Button
+                key="grab"
+                variant="primary"
+                label="選択を引用"
+                onPress={() => then(grab())}
+              />
+              <Text dimColor>(先に画面の文章を選択)</Text>
+            </Box>
+            <Box borderStyle="round" borderColor="promptBorder" paddingX={1}>
+              <Input
+                key="ask"
+                autoFocus
+                placeholder="ここに入力"
+                value={typed}
+                onInput={value => {
+                  void update($, draft, () => value)
+                }}
+                onSubmit={value => {
+                  void submit(value)
+                }}
+              />
+            </Box>
+          </Box>
+        ) : (
+          <Text dimColor>
+            この画面には入力欄がありません。プロンプトで「q: 質問」と送ってください。
+          </Text>
+        )}
+      </Box>
+    </Box>
+  )
+}
+
 export const register: Register = (on, options) => {
   const prefixes = list(options.prefixes, DEFAULT_PREFIXES)
 
@@ -521,9 +892,9 @@ export const register: Register = (on, options) => {
   })
 
   on('command.run', { command: 'btw-pane' }, async $ => {
-    await $.ui.open({ ...paneArgs(options), focus: true })
+    await show($, options, true)
 
-    return { text: 'btw ペインを開きました。' }
+    return { text: 'btw を開きました。' }
   })
 
   on('command.run', { command: 'btw-clear' }, async ($, e) => {
@@ -568,344 +939,25 @@ export const register: Register = (on, options) => {
     return { text: `メインに入れる対象: ${targets.length}件` }
   })
 
-  on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const sid = await $.session.id()
-    const all = await read($, items)
-    const m = await read($, memory)
-    const staged = await read($, quote)
-    const chosen = await read($, pick)
-    const sessionModel = await $.session.model().catch(() => '')
-    const modelRows = modelOptions(
-      sessionModel,
-      chosen.model || String(options.model ?? '').trim(),
-    )
-    const modelNow = chosen.model || String(options.model ?? '').trim()
-    const effortNow = chosen.effort || String(options.effort ?? '').trim()
+  on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) =>
+    draw($, options, $.ui.resolve(e), {
+      rows: e.props.scroll.bodyRows,
+      columns: e.props.bodyColumns,
+      id: e.requestId,
+      isBand: false,
+    }),
+  )
 
-    const typed = await read($, draft)
-    const skippedBy = await read($, pageAtom)
-    const fullId = await read($, fullAtom)
-    const mine = all.filter(item => item.sid === sid || item.isPinned)
-    const running = mine.filter(item => item.status === 'pending').length
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    const isOpen =
+      (await whereNow($, options)) === 'band' && (await read($, bandAtom))
+    if (e.props.hasSurvey || !isOpen) return next(e)
 
-    // The fixed layout: the controls on top, the newest items in the middle
-    // (older ones by the arrows), the composer at the bottom, all inside the
-    // rows the pane has, so nothing needs scrolling to be pressed.
-    const rows = e.props.scroll.bodyRows
-    const columns = e.props.bodyColumns
-    const full = fullId ? mine.find(item => item.id === fullId) : undefined
-    const isFixed = options.fixedLayout !== false && rows >= MIN_FIXED_ROWS && !full
-    // Rows the header takes once its buttons wrap: each label's cells plus the
-    // button's padding and the gap, over the width of the pane.
-    const wrapped = (labels: string[]) =>
-      Math.max(
-        1,
-        Math.ceil(
-          labels.reduce((sum, text) => sum + cells(text) + 4, 0) /
-            Math.max(10, columns),
-        ),
-      )
-    const headerRows =
-      wrapped(['btw', '待機中', '1-1 / 1', '^', 'v']) +
-      wrapped(['記憶 OFF', '直近 20 件', '履歴を消す', 'メインに反映']) +
-      wrapped(['モデル', ...modelRows.map(row => `[${row.label}]`)]) +
-      wrapped(['エフォート', ...EFFORT_OPTIONS.map(row => `[${row.label}]`)])
-    const composerRows = (staged ? 6 : 0) + 4
-    const room = Math.max(3, rows - headerRows - composerRows - 1)
-    // No answer is given more than the room left by the rest of an item.
-    const cap = Math.max(3, room - 9)
-    const skipped = Math.min(skippedBy, Math.max(0, mine.length - 1))
-    const view = isFixed
-      ? windowOf(mine, skipped, room, columns, cap)
-      : { start: 0, end: mine.length, shown: full ? [full] : mine }
-
-    const table = $.ui.resolve(e)
-    const { Box, Text, Button, Markdown } = table
-    const Input = 'Input' in table ? table.Input : undefined
-  
-    // A press leaves the focus ring on the button, so the next click on the
-    // field would not take the keyboard: hand the ring to the field again.
-    const back = () => {
-      if (Input) void $.ui.focus({ requestId: PANE, key: 'ask' }).catch(() => undefined)
-    }
-    const then = (work: unknown) => {
-      void Promise.resolve(work).then(back, back)
-    }
-
-    const submit = async (value: string) => {
-      const q = value.trim()
-      if (!q) return
-      await update($, draft, () => '')
-      await update($, pageAtom, () => 0)
-      await update($, fullAtom, () => '')
-      await ask($, options, q)
-    }
-
-    // The quote is taken only here, by this press: a selection alone is not.
-    const grab = async () => {
-      const selected = (await currentSelection($)).trim()
-      if (!selected) {
-        $.ui.toast('選択範囲がありません。画面の文章をドラッグ選択してから押してください')
-
-        return
-      }
-      await update($, quote, () => clip(selected, 8000))
-    }
-
-    const cycleKeep = () =>
-      setMemory($, one => {
-        const at = KEEP_STEPS.indexOf(one.keep)
-
-        return { ...one, keep: KEEP_STEPS[(at + 1) % KEEP_STEPS.length] ?? 5 }
-      })
-
-    const step = Math.max(1, view.shown.length)
-    const older = () =>
-      update($, pageAtom, n => Math.min(Math.max(0, mine.length - 1), n + step))
-    const newer = () => update($, pageAtom, n => Math.max(0, n - step))
-
-    const history = view.shown.map(item => {
-      const shown = isFixed
-        ? clipAnswer(item.a, Math.max(12, columns - 2), cap)
-        : { text: item.a, isCut: false }
-
-      return (
-      <Box key={`item:${item.id}`} flexDirection="column" marginBottom={1}>
-        <Text bold color="suggestion">
-          {item.isPinned ? '[ピン] ' : ''}Q: {item.q}
-        </Text>
-        {item.quote ? (
-          <Text dimColor>引用: {clip(item.quote.replace(/\s+/g, ' '), 120)}</Text>
-        ) : null}
-        <Text bold color="claude">
-          A:
-        </Text>
-        {item.status === 'pending' ? (
-          <Text dimColor>考え中...</Text>
-        ) : item.status === 'error' ? (
-          <Text color="error">{shown.text}</Text>
-        ) : (
-          <Markdown text={shown.text} />
-        )}
-        {shown.isCut ? (
-          <Box flexDirection="row" gap={1}>
-            <Text dimColor>(以下省略)</Text>
-            <Button
-              key={`full:${item.id}`}
-              plain
-              label="全文を見る"
-              onPress={() => then(update($, fullAtom, () => item.id))}
-            />
-          </Box>
-        ) : null}
-        <Box flexDirection="row" flexWrap="wrap" gap={1}>
-          <Button
-            key={`inj:${item.id}`}
-            plain
-            label={item.isInjected ? 'メイン済' : 'メインへ'}
-            onPress={() => {
-              void inject($, [item])
-            }}
-          />
-          <Button
-            key={`pin:${item.id}`}
-            plain
-            label={item.isPinned ? 'ピン解除' : 'ピン留め'}
-            onPress={() => {
-              void mutate($, every =>
-                every.map(one =>
-                  one.id === item.id ? { ...one, isPinned: !one.isPinned } : one,
-                ),
-              )
-            }}
-          />
-          <Button
-            key={`copy:${item.id}`}
-            plain
-            label="回答をコピー"
-            onPress={press => {
-              void $.ui.copy({ text: item.a, surface: press.surface })
-            }}
-          />
-          <Button
-            key={`del:${item.id}`}
-            plain
-            label="削除"
-            onPress={() => {
-              void mutate($, every => every.filter(one => one.id !== item.id))
-            }}
-          />
-        </Box>
-      </Box>
-      )
+    return draw($, options, $.ui.resolve(e), {
+      rows: e.props.scroll.bodyRows,
+      columns: e.props.bodyColumns,
+      id: e.requestId,
+      isBand: true,
     })
-
-    return (
-      <Box flexDirection="column">
-        <Box flexDirection="column" flexShrink={0}>
-          <Box flexDirection="row" flexWrap="wrap" gap={1}>
-            <Text bold color="claude">
-              btw
-            </Text>
-            <Text dimColor>{running > 0 ? `実行中 ${running}` : '待機中'}</Text>
-            {isFixed && mine.length > 0 ? (
-              <Text dimColor>{`${view.start + 1}-${view.end} / ${mine.length}`}</Text>
-            ) : null}
-            {full ? (
-              <Button
-                key="full-back"
-                label="一覧に戻る"
-                onPress={() => then(update($, fullAtom, () => ''))}
-              />
-            ) : null}
-            {isFixed ? (
-              <Button
-                key="older"
-                plain
-                label="^"
-                onPress={() => then(older())}
-              />
-            ) : null}
-            {isFixed ? (
-              <Button
-                key="newer"
-                plain
-                label="v"
-                onPress={() => then(newer())}
-              />
-            ) : null}
-          </Box>
-          <Box flexDirection="row" flexWrap="wrap" gap={1}>
-            <Button
-              key="memory"
-              label={m.isOn ? '記憶 ON' : '記憶 OFF'}
-              onPress={() => then(setMemory($, one => ({ ...one, isOn: !one.isOn })))}
-            />
-            <Button key="keep" label={`直近 ${m.keep} 件`} onPress={() => then(cycleKeep())} />
-            <Button
-              key="clear"
-              label="履歴を消す"
-              onPress={() =>
-                then(
-                  mutate($, every =>
-                    every.filter(item => item.sid !== sid || item.isPinned),
-                  ),
-                )
-              }
-            />
-            <Button
-              key="inject-all"
-              label="メインに反映"
-              onPress={() =>
-                then(
-                  inject(
-                    $,
-                    mine.filter(item => item.sid === sid),
-                  ),
-                )
-              }
-            />
-          </Box>
-          <Box flexDirection="row" flexWrap="wrap" gap={1}>
-            <Text dimColor>モデル</Text>
-            {modelRows.map(row => (
-              <Button
-                key={`model:${row.value}`}
-                plain
-                label={row.value === modelNow ? `[${row.label}]` : row.label}
-                onPress={() =>
-                  then(update($, pick, one => ({ ...one, model: row.value })))
-                }
-              />
-            ))}
-          </Box>
-          <Box flexDirection="row" flexWrap="wrap" gap={1}>
-            <Text dimColor>エフォート</Text>
-            {EFFORT_OPTIONS.map(row => (
-              <Button
-                key={`effort:${row.value}`}
-                plain
-                label={row.value === effortNow ? `[${row.label}]` : row.label}
-                onPress={() =>
-                  then(update($, pick, one => ({ ...one, effort: row.value })))
-                }
-              />
-            ))}
-          </Box>
-        </Box>
-
-        {isFixed ? (
-          <Box
-            flexDirection="column"
-            justifyContent="flex-end"
-            height={room}
-            overflow="hidden"
-          >
-            {history}
-          </Box>
-        ) : (
-          <Box flexDirection="column">
-            {mine.length === 0 ? null : history}
-          </Box>
-        )}
-
-        {mine.length === 0 ? (
-          <Text dimColor>
-            まだ質問がありません。下の欄、またはプロンプトの「q: 質問」で聞けます。
-          </Text>
-        ) : null}
-
-        <Box flexDirection="column" flexShrink={0}>
-          {staged ? (
-            <Box flexDirection="column" borderStyle="round" borderColor="claude" paddingX={1}>
-              <Box flexDirection="row" gap={1}>
-                <Text bold color="claude">
-                  引用中
-                </Text>
-                <Button
-                  key="unquote"
-                  plain
-                  label="外す"
-                  onPress={() => then(update($, quote, () => ''))}
-                />
-              </Box>
-              <Text dimColor>{clip(staged.replace(/\s+/g, ' '), 120)}</Text>
-            </Box>
-          ) : null}
-
-          {Input ? (
-            <Box flexDirection="column">
-              <Box flexDirection="row" gap={1}>
-                <Button
-                  key="grab"
-                  variant="primary"
-                  label="選択を引用"
-                  onPress={() => then(grab())}
-                />
-                <Text dimColor>(先に画面の文章を選択)</Text>
-              </Box>
-              <Box borderStyle="round" borderColor="promptBorder" paddingX={1}>
-                <Input
-                  key="ask"
-                  autoFocus
-                  placeholder="ここに入力"
-                  value={typed}
-                  onInput={value => {
-                    void update($, draft, () => value)
-                  }}
-                  onSubmit={value => {
-                    void submit(value)
-                  }}
-                />
-              </Box>
-            </Box>
-          ) : (
-            <Text dimColor>
-              この画面には入力欄がありません。プロンプトで「q: 質問」と送ってください。
-            </Text>
-          )}
-        </Box>
-      </Box>
-    )
   })
 }

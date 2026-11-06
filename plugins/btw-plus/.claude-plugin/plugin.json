@@ -1,6 +1,6 @@
 {
   "name": "btw-plus",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "ツールが使える btw。履歴を覚え、サイドウィンドウに答えを出し、画面で選択した文章を引用して質問できる。答えはメインの会話に入れることもできる。",
   "author": {
     "name": "TIH-HIT"
@@ -39,6 +39,12 @@
       "title": "タイムアウト(秒)",
       "description": "1回のサイド質問を打ち切るまでの秒数(最大600)。",
       "default": 270
+    },
+    "location": {
+      "type": "string",
+      "title": "表示位置",
+      "description": "pane = 画面の横(フルスクリーン時)または入力欄の上のペイン / band = 入力欄のすぐ上、メインと同じ幅(ターミナルとデスクトップのみ)。ペインの「表示」ボタンでも切り替えられる。",
+      "default": "pane"
     },
     "paneColumns": {
       "type": "number",
