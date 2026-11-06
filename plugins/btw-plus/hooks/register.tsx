@@ -41,6 +41,8 @@ const DEFAULT_TOOLS = 'Read,Grep,Glob,WebSearch,WebFetch'
 const DEFAULT_PREFIXES = 'q:,btw:,？？'
 // A pane shorter than this is drawn in its natural flow, not the fixed layout.
 const MIN_FIXED_ROWS = 14
+// The band is short (half the screen at most): its fixed layout needs less.
+const MIN_FIXED_BAND_ROWS = 8
 
 // Change a tag when the fields of its value change: an older value is then
 // read as the initial one instead of being misread.
@@ -75,6 +77,11 @@ const whereAtom = atom({ plugin: 'btw-plus', key: 'where' } as const, '', {
 const bandAtom = atom({ plugin: 'btw-plus', key: 'band' } as const, false, {
   shape: 'band-1',
 })
+const settingsAtom = atom(
+  { plugin: 'btw-plus', key: 'settings' } as const,
+  false,
+  { shape: 'settings-1' },
+)
 const pageAtom = atom({ plugin: 'btw-plus', key: 'page' } as const, 0, {
   shape: 'page-1',
 })
@@ -488,9 +495,13 @@ async function draw(
   // The fixed layout: the controls on top, the newest items in the middle
   // (older ones by the arrows), the composer at the bottom, all inside the
   // rows the pane has, so nothing needs scrolling to be pressed.
-  const { rows, columns } = site
+  // The band is drawn in a frame, which takes two rows and four columns.
+  const rows = site.isBand ? site.rows - 2 : site.rows
+  const columns = site.isBand ? site.columns - 4 : site.columns
+  const isSettingsOpen = await read($, settingsAtom)
   const where = await whereNow($, options)
-  const wantsFixed = options.fixedLayout !== false && rows >= MIN_FIXED_ROWS
+  const wantsFixed = options.fixedLayout !== false &&
+    site.rows >= (site.isBand ? MIN_FIXED_BAND_ROWS : MIN_FIXED_ROWS)
   // Rows the header takes once its buttons wrap: each label's cells plus the
   // button's padding and the gap, over the width of the pane.
   const wrapped = (labels: string[]) =>
@@ -503,10 +514,13 @@ async function draw(
     )
   const headerRows =
     wrapped(['btw', '待機中', '1-1 / 1', '^', 'v']) +
-    wrapped(['記憶 OFF', '直近 20 件', '履歴を消す', 'メインに反映']) +
-    wrapped(['モデル', ...modelRows.map(row => `[${row.label}]`)]) +
-    wrapped(['エフォート', ...EFFORT_OPTIONS.map(row => `[${row.label}]`)])
-  const composerRows = (staged ? 6 : 0) + 4
+    wrapped(['記憶 OFF', '直近 20 件', '履歴を消す', 'メインに反映', '設定 (sonnet / medium)']) +
+    (isSettingsOpen
+      ? wrapped(['モデル', ...modelRows.map(row => `[${row.label}]`)]) +
+        wrapped(['エフォート', ...EFFORT_OPTIONS.map(row => `[${row.label}]`)])
+      : 0)
+  // The band's field sits on one row beside the quote button.
+  const composerRows = (staged ? (site.isBand ? 4 : 6) : 0) + (site.isBand ? 1 : 4)
   const room = Math.max(3, rows - headerRows - composerRows - 1)
   const isFixed = wantsFixed
   const list = entriesOf(mine, columns)
@@ -669,8 +683,17 @@ async function draw(
   }
   flush()
 
+  const frame = {
+    ...(site.isBand
+      ? { borderStyle: 'round' as const, borderColor: 'promptBorder' as const, paddingX: 1 }
+      : {}),
+    ...(String(options.background ?? '').trim()
+      ? { backgroundColor: String(options.background).trim() }
+      : {}),
+  }
+
   return (
-    <Box flexDirection="column">
+    <Box flexDirection="column" {...frame}>
       <Box flexDirection="column" flexShrink={0}>
         <Box flexDirection="row" flexWrap="wrap" gap={1}>
           <Text bold color="claude">
@@ -727,6 +750,11 @@ async function draw(
             }
           />
           <Button
+            key="settings"
+            label={`設定 (${modelNow || '既定'} / ${effortNow || '既定'})`}
+            onPress={() => then(update($, settingsAtom, open => !open))}
+          />
+          <Button
             key="inject-all"
             label="メインに反映"
             onPress={() =>
@@ -739,6 +767,8 @@ async function draw(
             }
           />
         </Box>
+        {isSettingsOpen ? (
+          <Box flexDirection="column">
         <Box flexDirection="row" flexWrap="wrap" gap={1}>
           <Text dimColor>モデル</Text>
           {modelRows.map(row => (
@@ -765,6 +795,8 @@ async function draw(
             />
           ))}
         </Box>
+          </Box>
+        ) : null}
       </Box>
 
       {isFixed ? (
@@ -806,7 +838,30 @@ async function draw(
           </Box>
         ) : null}
 
-        {Input ? (
+        {Input && site.isBand ? (
+          <Box flexDirection="row" gap={1}>
+            <Button
+              key="grab"
+              variant="primary"
+              label="選択を引用"
+              onPress={() => then(grab())}
+            />
+            <Box flexGrow={1}>
+              <Input
+                key="ask"
+                autoFocus
+                placeholder="ここに入力"
+                value={typed}
+                onInput={value => {
+                  void update($, draft, () => value)
+                }}
+                onSubmit={value => {
+                  void submit(value)
+                }}
+              />
+            </Box>
+          </Box>
+        ) : Input ? (
           <Box flexDirection="column">
             <Box flexDirection="row" gap={1}>
               <Button
@@ -849,8 +904,10 @@ async function scrollHistory(
   options: PluginOptions,
   by: number,
   bodyRows: number,
+  isBand: boolean,
 ): Promise<boolean> {
-  if (options.fixedLayout === false || bodyRows < MIN_FIXED_ROWS) return false
+  const least = isBand ? MIN_FIXED_BAND_ROWS : MIN_FIXED_ROWS
+  if (options.fixedLayout === false || bodyRows < least) return false
   // How many lines the history has (the same count entriesOf makes), so the
   // wheel cannot be turned past the top and then have to be turned back.
   const sid = await $.session.id()
@@ -1008,9 +1065,9 @@ export const register: Register = (on, options) => {
   // The wheel and scroll keys move the history inside the fixed layout, not the
   // whole pane: take the move, keep the header and the field where they are.
   on('ui.scroll', { component: 'Pane', requestId: PANE }, async ($, e, next) =>
-    (await scrollHistory($, options, e.by, e.bodyRows)) ? {} : next(e),
+    (await scrollHistory($, options, e.by, e.bodyRows, false)) ? {} : next(e),
   )
   on('ui.scroll', { component: 'AbovePrompt' }, async ($, e, next) =>
-    (await scrollHistory($, options, e.by, e.bodyRows)) ? {} : next(e),
+    (await scrollHistory($, options, e.by, e.bodyRows, true)) ? {} : next(e),
   )
 }

@@ -445,6 +445,7 @@ test('model and effort picked in the pane reach the fork', async ($, on) => {
   await start($)
 
   const ui = await mount($)
+  await ui.press({ key: 'settings' })
   await ui.press({ key: 'model:haiku' })
   await ui.press({ key: 'effort:low' })
   await ui.unmount()
@@ -461,6 +462,8 @@ test('model and effort are rows of buttons, the chosen one marked', async ($, on
 
   for (const surface of ['terminal', 'desktop', 'vscode', 'mobile']) {
     const ui = await mount($, surface)
+    // The settings stay open from one surface to the next.
+    if (!(await ui.find({ key: 'model:opus' }))) await ui.press({ key: 'settings' })
     await ui.press({ key: 'model:opus' })
     expect(await ui.find({ type: 'Button', text: /\[opus\(最新\)\]/ })).toBeDefined()
     await ui.press({ key: 'effort:high' })
@@ -565,4 +568,19 @@ test('the pane button moves the history to the band and back', async ($, on) => 
   await band.press({ key: 'where' })
   await band.unmount()
   expect(opens.length).toBe(first + 1)
+})
+
+test('the band is framed, and keeps the fixed layout at its short height', { options: { location: 'band', background: '#1e1e2e' } }, async ($, on) => {
+  const { clock } = world(on)
+  await start($)
+  for (let n = 1; n <= 6; n += 1) await ask($, clock, `q: 質問${n}`)
+
+  const ui = await mountBand($, 'terminal', { maxRows: 12, scroll: { offset: 0, bodyRows: 11 } })
+  for (const key of ['memory', 'settings', 'ask', 'older', 'newer']) {
+    expect([key, Boolean(await ui.find({ key }))]).toEqual([key, true])
+  }
+  // The newest answer shows; the oldest question is a scroll away.
+  expect(await ui.find({ type: 'Markdown', text: /答えです/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /Q: 質問1$/ })).toBeUndefined()
+  await ui.unmount()
 })

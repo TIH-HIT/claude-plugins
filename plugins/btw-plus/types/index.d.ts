@@ -35,6 +35,7 @@ declare module 'claude-code' {
       page: Shaped<number>
       where: Shaped<string>
       band: Shaped<boolean>
+      settings: Shaped<boolean>
       pick: Shaped<{ model: string; effort: string }>
     }
   }
