@@ -905,6 +905,7 @@ async function scrollHistory(
   by: number,
   bodyRows: number,
   isBand: boolean,
+  requestId: string,
 ): Promise<boolean> {
   const least = isBand ? MIN_FIXED_BAND_ROWS : MIN_FIXED_ROWS
   if (options.fixedLayout === false || bodyRows < least) return false
@@ -925,6 +926,8 @@ async function scrollHistory(
   await update($, pageAtom, n =>
     Math.min(Math.max(0, count - 1), Math.max(0, n - by)),
   )
+  // The move is drawn anew; keep the keyboard on the field if the site had it.
+  await $.ui.focus({ requestId, key: 'ask' }).catch(() => undefined)
 
   return true
 }
@@ -1065,9 +1068,9 @@ export const register: Register = (on, options) => {
   // The wheel and scroll keys move the history inside the fixed layout, not the
   // whole pane: take the move, keep the header and the field where they are.
   on('ui.scroll', { component: 'Pane', requestId: PANE }, async ($, e, next) =>
-    (await scrollHistory($, options, e.by, e.bodyRows, false)) ? {} : next(e),
+    (await scrollHistory($, options, e.by, e.bodyRows, false, e.requestId)) ? {} : next(e),
   )
   on('ui.scroll', { component: 'AbovePrompt' }, async ($, e, next) =>
-    (await scrollHistory($, options, e.by, e.bodyRows, true)) ? {} : next(e),
+    (await scrollHistory($, options, e.by, e.bodyRows, true, e.requestId)) ? {} : next(e),
   )
 }
