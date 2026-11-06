@@ -730,19 +730,19 @@ async function draw(
                 onPress={() => update($, bandAtom, () => false)}
               />
             ) : null}
-            {isFixed ? (
+            {isFixed && !site.isBand ? (
               <Button
                 key="older"
                 plain
-                label={site.isBand ? "上へ" : "^"}
+                label="^"
                 onPress={() => then(older())}
               />
             ) : null}
-            {isFixed ? (
+            {isFixed && !site.isBand ? (
               <Button
                 key="newer"
                 plain
-                label={site.isBand ? "下へ" : "v"}
+                label="v"
                 onPress={() => then(newer())}
               />
             ) : null}
