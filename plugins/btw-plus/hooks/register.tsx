@@ -430,8 +430,29 @@ function entriesOf(all: Item[], columns: number): Entry[] {
     if (item.status === 'pending') {
       add('pending', '考え中...', 1)
     } else {
-      for (const line of (item.a || ' ').split('\n')) {
-        add(item.status === 'error' ? 'error' : 'ln', line, rowsOf(line))
+      // A table or a fenced block is one entry: scrolled past as a whole, so a
+      // window never begins in the middle of one and draws its tail as text.
+      const lines = (item.a || ' ').split('\n')
+      for (let at = 0; at < lines.length; at += 1) {
+        const line = lines[at] as string
+        if (item.status === 'error') {
+          add('error', line, rowsOf(line))
+        } else if (line.trimStart().startsWith('|')) {
+          let end = at
+          while (end + 1 < lines.length && (lines[end + 1] as string).trimStart().startsWith('|')) end += 1
+          const block = lines.slice(at, end + 1)
+          // The table draws a rule above and below it, and often between rows.
+          add('ln', block.join('\n'), block.reduce((sum, row) => sum + rowsOf(row), 0) + 3)
+          at = end
+        } else if (line.trimStart().startsWith('```')) {
+          let end = at + 1
+          while (end < lines.length && !(lines[end] as string).trimStart().startsWith('```')) end += 1
+          const block = lines.slice(at, Math.min(end, lines.length - 1) + 1)
+          add('ln', block.join('\n'), block.reduce((sum, row) => sum + rowsOf(row), 0) + 1)
+          at = Math.min(end, lines.length - 1)
+        } else {
+          add('ln', line, rowsOf(line))
+        }
       }
     }
     add('foot', '', columns < 60 ? 3 : 2)
@@ -462,27 +483,6 @@ function windowOf(list: Entry[], fromEnd: number, room: number) {
     used += entry.rows
     start -= 1
   }
-
-  // A window that begins inside a table or a code block would draw its tail
-  // as plain text: begin at the top of the table, and of the fenced block.
-  const isRow = (entry?: Entry) =>
-    entry?.kind === 'ln' && entry.text.trimStart().startsWith('|')
-  while (start > 0 && isRow(list[start]) && isRow(list[start - 1])) start -= 1
-  const fenced = (at: number) => {
-    // Lines of the same answer before `at`, counting the ``` fences.
-    let open = false
-    let first = at
-    const item = list[at]?.item
-    while (first > 0 && list[first - 1]?.item === item && list[first - 1]?.kind === 'ln') {
-      first -= 1
-    }
-    for (let i = first; i < at; i += 1) {
-      if ((list[i] as Entry).text.trimStart().startsWith('```')) open = !open
-    }
-
-    return open ? first : at
-  }
-  if (start > 0 && list[start]?.kind === 'ln') start = fenced(start)
 
   return { start, end: Math.min(end, list.length), shown: list.slice(start, end) }
 }

@@ -585,20 +585,20 @@ test('the band is framed, and keeps the fixed layout at its short height', { opt
   await ui.unmount()
 })
 
-test('a window never begins in the middle of a table', async ($, on) => {
-  const filler = Array.from({ length: 30 }, (_, n) => `行${n + 1}`).join('\n')
-  const table = '| 名前 | 値 |\n|---|---|\n| あ | 1 |\n| い | 2 |\n| う | 3 |\n| え | 4 |'
+test('a table scrolls as one block: it is drawn whole or not at all', async ($, on) => {
+  const filler = Array.from({ length: 40 }, (_, n) => `行${n + 1}`).join('\n')
+  const table = '| 名前 | 値 |\n|---|---|\n| あ | 1 |\n| い | 2 |\n| う | 3 |'
   const { clock } = world(on, { stdout: `${filler}\n\n${table}\n\n末尾` })
   await start($)
   await ask($, clock, 'q: 表')
 
   const ui = await mount($)
-  const blocks = await ui.findAll({ type: 'Markdown' })
-  const text = blocks.map(block => block.text).join('\n')
-  // Whichever rows show, the header and its rule come with them.
-  if (text.includes('| う | 3 |')) {
-    expect(text).toContain('| 名前 | 値 |')
-    expect(text).toContain('|---|---|')
+  for (let n = 0; n < 8; n += 1) {
+    const text = (await ui.findAll({ type: 'Markdown' })).map(block => block.text).join('\n')
+    const rows = ['| 名前 | 値 |', '|---|---|', '| あ | 1 |', '| い | 2 |', '| う | 3 |']
+    const shown = rows.filter(row => text.includes(row)).length
+    expect([0, rows.length]).toContain(shown)
+    await ui.press({ key: 'older' })
   }
   await ui.unmount()
 })
