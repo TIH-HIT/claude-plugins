@@ -474,7 +474,13 @@ async function draw(
   $: EngineInterface,
   options: PluginOptions,
   table: ReturnType<EngineInterface['ui']['resolve']>,
-  site: { rows: number; columns: number; id: string; isBand: boolean },
+  site: {
+    rows: number
+    columns: number
+    id: string
+    isBand: boolean
+    maxRows?: number
+  },
 ) {
   const sid = await $.session.id()
   const all = await read($, items)
@@ -692,177 +698,159 @@ async function draw(
       : {}),
   }
 
+  // A tree that fits the band whole is not scrolled by the engine, so its wheel
+  // would go to the conversation behind it. Rows past what the band shows make
+  // it a tree the band scrolls, and the scroll hook takes the moves.
+  const spare = site.isBand ? Math.max(2, (site.maxRows ?? site.rows) + 1 - site.rows) : 0
+
   return (
-    <Box flexDirection="column" {...frame}>
-      <Box flexDirection="column" flexShrink={0}>
-        <Box flexDirection="row" flexWrap="wrap" gap={1}>
-          <Text bold color="claude">
-            btw
-          </Text>
-          <Text dimColor>{running > 0 ? `実行中 ${running}` : '待機中'}</Text>
-          <Button
-            key="where"
-            plain
-            label={where === 'band' ? '表示: 下' : '表示: 横'}
-            onPress={() => then(move())}
-          />
-          {site.isBand ? (
+    <Box flexDirection="column">
+      <Box flexDirection="column" {...frame}>
+        <Box flexDirection="column" flexShrink={0}>
+          <Box flexDirection="row" flexWrap="wrap" gap={1}>
+            <Text bold color="claude">
+              btw
+            </Text>
+            <Text dimColor>{running > 0 ? `実行中 ${running}` : '待機中'}</Text>
             <Button
-              key="band-close"
+              key="where"
               plain
-              label="閉じる"
-              onPress={() => update($, bandAtom, () => false)}
+              label={where === 'band' ? '表示: 下' : '表示: 横'}
+              onPress={() => then(move())}
             />
-          ) : null}
-          {isFixed ? (
-            <Button
-              key="older"
-              plain
-              label="^"
-              onPress={() => then(older())}
-            />
-          ) : null}
-          {isFixed ? (
-            <Button
-              key="newer"
-              plain
-              label="v"
-              onPress={() => then(newer())}
-            />
-          ) : null}
-        </Box>
-        <Box flexDirection="row" flexWrap="wrap" gap={1}>
-          <Button
-            key="memory"
-            label={m.isOn ? '記憶 ON' : '記憶 OFF'}
-            onPress={() => then(setMemory($, one => ({ ...one, isOn: !one.isOn })))}
-          />
-          <Button key="keep" label={`直近 ${m.keep} 件`} onPress={() => then(cycleKeep())} />
-          <Button
-            key="clear"
-            label="履歴を消す"
-            onPress={() =>
-              then(
-                mutate($, every =>
-                  every.filter(item => item.sid !== sid || item.isPinned),
-                ),
-              )
-            }
-          />
-          <Button
-            key="settings"
-            label={`設定 (${modelNow || '既定'} / ${effortNow || '既定'})`}
-            onPress={() => then(update($, settingsAtom, open => !open))}
-          />
-          <Button
-            key="inject-all"
-            label="メインに反映"
-            onPress={() =>
-              then(
-                inject(
-                  $,
-                  mine.filter(item => item.sid === sid),
-                ),
-              )
-            }
-          />
-        </Box>
-        {isSettingsOpen ? (
-          <Box flexDirection="column">
-        <Box flexDirection="row" flexWrap="wrap" gap={1}>
-          <Text dimColor>モデル</Text>
-          {modelRows.map(row => (
-            <Button
-              key={`model:${row.value}`}
-              plain
-              label={row.value === modelNow ? `[${row.label}]` : row.label}
-              onPress={() =>
-                then(update($, pick, one => ({ ...one, model: row.value })))
-              }
-            />
-          ))}
-        </Box>
-        <Box flexDirection="row" flexWrap="wrap" gap={1}>
-          <Text dimColor>エフォート</Text>
-          {EFFORT_OPTIONS.map(row => (
-            <Button
-              key={`effort:${row.value}`}
-              plain
-              label={row.value === effortNow ? `[${row.label}]` : row.label}
-              onPress={() =>
-                then(update($, pick, one => ({ ...one, effort: row.value })))
-              }
-            />
-          ))}
-        </Box>
-          </Box>
-        ) : null}
-      </Box>
-
-      {isFixed ? (
-        <Box
-          flexDirection="column"
-          justifyContent="flex-end"
-          height={room}
-          overflow="hidden"
-        >
-          {history}
-        </Box>
-      ) : (
-        <Box flexDirection="column">
-          {mine.length === 0 ? null : history}
-        </Box>
-      )}
-
-      {mine.length === 0 ? (
-        <Text dimColor>
-          まだ質問がありません。下の欄、またはプロンプトの「q: 質問」で聞けます。
-        </Text>
-      ) : null}
-
-      <Box flexDirection="column" flexShrink={0}>
-        {staged ? (
-          <Box flexDirection="column" borderStyle="round" borderColor="claude" paddingX={1}>
-            <Box flexDirection="row" gap={1}>
-              <Text bold color="claude">
-                引用中
-              </Text>
+            {site.isBand ? (
               <Button
-                key="unquote"
+                key="band-close"
                 plain
-                label="外す"
-                onPress={() => then(update($, quote, () => ''))}
+                label="閉じる"
+                onPress={() => update($, bandAtom, () => false)}
               />
-            </Box>
-            <Text dimColor>{clip(staged.replace(/\s+/g, ' '), 120)}</Text>
+            ) : null}
+            {isFixed ? (
+              <Button
+                key="older"
+                plain
+                label="^"
+                onPress={() => then(older())}
+              />
+            ) : null}
+            {isFixed ? (
+              <Button
+                key="newer"
+                plain
+                label="v"
+                onPress={() => then(newer())}
+              />
+            ) : null}
           </Box>
+          <Box flexDirection="row" flexWrap="wrap" gap={1}>
+            <Button
+              key="memory"
+              label={m.isOn ? '記憶 ON' : '記憶 OFF'}
+              onPress={() => then(setMemory($, one => ({ ...one, isOn: !one.isOn })))}
+            />
+            <Button key="keep" label={`直近 ${m.keep} 件`} onPress={() => then(cycleKeep())} />
+            <Button
+              key="clear"
+              label="履歴を消す"
+              onPress={() =>
+                then(
+                  mutate($, every =>
+                    every.filter(item => item.sid !== sid || item.isPinned),
+                  ),
+                )
+              }
+            />
+            <Button
+              key="settings"
+              label={`設定 (${modelNow || '既定'} / ${effortNow || '既定'})`}
+              onPress={() => then(update($, settingsAtom, open => !open))}
+            />
+            <Button
+              key="inject-all"
+              label="メインに反映"
+              onPress={() =>
+                then(
+                  inject(
+                    $,
+                    mine.filter(item => item.sid === sid),
+                  ),
+                )
+              }
+            />
+          </Box>
+          {isSettingsOpen ? (
+            <Box flexDirection="column">
+          <Box flexDirection="row" flexWrap="wrap" gap={1}>
+            <Text dimColor>モデル</Text>
+            {modelRows.map(row => (
+              <Button
+                key={`model:${row.value}`}
+                plain
+                label={row.value === modelNow ? `[${row.label}]` : row.label}
+                onPress={() =>
+                  then(update($, pick, one => ({ ...one, model: row.value })))
+                }
+              />
+            ))}
+          </Box>
+          <Box flexDirection="row" flexWrap="wrap" gap={1}>
+            <Text dimColor>エフォート</Text>
+            {EFFORT_OPTIONS.map(row => (
+              <Button
+                key={`effort:${row.value}`}
+                plain
+                label={row.value === effortNow ? `[${row.label}]` : row.label}
+                onPress={() =>
+                  then(update($, pick, one => ({ ...one, effort: row.value })))
+                }
+              />
+            ))}
+          </Box>
+            </Box>
+          ) : null}
+        </Box>
+
+        {isFixed ? (
+          <Box
+            flexDirection="column"
+            justifyContent="flex-end"
+            height={room}
+            overflow="hidden"
+          >
+            {history}
+          </Box>
+        ) : (
+          <Box flexDirection="column">
+            {mine.length === 0 ? null : history}
+          </Box>
+        )}
+
+        {mine.length === 0 ? (
+          <Text dimColor>
+            まだ質問がありません。下の欄、またはプロンプトの「q: 質問」で聞けます。
+          </Text>
         ) : null}
 
-        {Input && site.isBand ? (
-          <Box flexDirection="row" gap={1}>
-            <Button
-              key="grab"
-              variant="primary"
-              label="選択を引用"
-              onPress={() => then(grab())}
-            />
-            <Box flexGrow={1}>
-              <Input
-                key="ask"
-                autoFocus
-                placeholder="ここに入力"
-                value={typed}
-                onInput={value => {
-                  void update($, draft, () => value)
-                }}
-                onSubmit={value => {
-                  void submit(value)
-                }}
-              />
+        <Box flexDirection="column" flexShrink={0}>
+          {staged ? (
+            <Box flexDirection="column" borderStyle="round" borderColor="claude" paddingX={1}>
+              <Box flexDirection="row" gap={1}>
+                <Text bold color="claude">
+                  引用中
+                </Text>
+                <Button
+                  key="unquote"
+                  plain
+                  label="外す"
+                  onPress={() => then(update($, quote, () => ''))}
+                />
+              </Box>
+              <Text dimColor>{clip(staged.replace(/\s+/g, ' '), 120)}</Text>
             </Box>
-          </Box>
-        ) : Input ? (
-          <Box flexDirection="column">
+          ) : null}
+
+          {Input && site.isBand ? (
             <Box flexDirection="row" gap={1}>
               <Button
                 key="grab"
@@ -870,29 +858,55 @@ async function draw(
                 label="選択を引用"
                 onPress={() => then(grab())}
               />
-              <Text dimColor>(先に画面の文章を選択)</Text>
+              <Box flexGrow={1}>
+                <Input
+                  key="ask"
+                  autoFocus
+                  placeholder="ここに入力"
+                  value={typed}
+                  onInput={value => {
+                    void update($, draft, () => value)
+                  }}
+                  onSubmit={value => {
+                    void submit(value)
+                  }}
+                />
+              </Box>
             </Box>
-            <Box borderStyle="round" borderColor="promptBorder" paddingX={1}>
-              <Input
-                key="ask"
-                autoFocus
-                placeholder="ここに入力"
-                value={typed}
-                onInput={value => {
-                  void update($, draft, () => value)
-                }}
-                onSubmit={value => {
-                  void submit(value)
-                }}
-              />
+          ) : Input ? (
+            <Box flexDirection="column">
+              <Box flexDirection="row" gap={1}>
+                <Button
+                  key="grab"
+                  variant="primary"
+                  label="選択を引用"
+                  onPress={() => then(grab())}
+                />
+                <Text dimColor>(先に画面の文章を選択)</Text>
+              </Box>
+              <Box borderStyle="round" borderColor="promptBorder" paddingX={1}>
+                <Input
+                  key="ask"
+                  autoFocus
+                  placeholder="ここに入力"
+                  value={typed}
+                  onInput={value => {
+                    void update($, draft, () => value)
+                  }}
+                  onSubmit={value => {
+                    void submit(value)
+                  }}
+                />
+              </Box>
             </Box>
-          </Box>
-        ) : (
-          <Text dimColor>
-            この画面には入力欄がありません。プロンプトで「q: 質問」と送ってください。
-          </Text>
-        )}
+          ) : (
+            <Text dimColor>
+              この画面には入力欄がありません。プロンプトで「q: 質問」と送ってください。
+            </Text>
+          )}
+        </Box>
       </Box>
+      {spare > 0 ? <Box height={spare} /> : null}
     </Box>
   )
 }
@@ -1062,6 +1076,7 @@ export const register: Register = (on, options) => {
       columns: e.props.bodyColumns,
       id: e.requestId,
       isBand: true,
+      maxRows: e.props.maxRows,
     })
   })
 
