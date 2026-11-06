@@ -926,8 +926,11 @@ async function scrollHistory(
   isBand: boolean,
   requestId: string,
 ): Promise<boolean> {
-  const least = isBand ? MIN_FIXED_BAND_ROWS : MIN_FIXED_ROWS
-  if (options.fixedLayout === false || bodyRows < least) return false
+  // The band reports the rows its tree takes now, which can be fewer than the
+  // rows it is given, so only the pane's size says whether the layout is fixed.
+  if (options.fixedLayout === false || (!isBand && bodyRows < MIN_FIXED_ROWS)) {
+    return false
+  }
   // How many lines the history has (the same count entriesOf makes), so the
   // wheel cannot be turned past the top and then have to be turned back.
   const sid = await $.session.id()
