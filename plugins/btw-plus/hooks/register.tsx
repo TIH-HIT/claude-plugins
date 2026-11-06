@@ -82,6 +82,10 @@ const settingsAtom = atom(
   false,
   { shape: 'settings-1' },
 )
+// The first column shown of a table wider than the pane.
+const columnAtom = atom({ plugin: 'btw-plus', key: 'column' } as const, 0, {
+  shape: 'column-1',
+})
 const pageAtom = atom({ plugin: 'btw-plus', key: 'page' } as const, 0, {
   shape: 'page-1',
 })
@@ -379,6 +383,7 @@ async function ask($: EngineInterface, options: PluginOptions, q: string) {
   await mutate($, all => [...all, item])
   await update($, quote, () => '')
   await update($, pageAtom, () => 0)
+  await update($, columnAtom, () => 0)
   await show($, options)
   // The fork outlives this dispatch, so it runs from a timer of its own.
   $.clock.after(0, () => {
@@ -406,12 +411,14 @@ type Entry = {
   item: Item
   text: string
   rows: number
+  /** A table wider than the pane: drawn by the plugin, its columns paged. */
+  isWide?: boolean
 }
 
 // A Markdown table as aligned plain rows. The engine's Markdown turns a table
 // wider than a narrow pane into a list; these rows keep the grid and are cut
 // at the pane's edge instead (the whole answer is in "回答をコピー").
-function tableLines(text: string): string[] {
+function tableLines(text: string, from = 0): string[] {
   const plain = (cell: string) => cell.replace(/\*\*|__|`/g, '').trim()
   const rows = text.split('\n').map(line => {
     const inner = line.trim().replace(/^\|/, '').replace(/\|$/, '')
@@ -426,17 +433,26 @@ function tableLines(text: string): string[] {
     })
   }
 
+  const first = Math.min(Math.max(0, from), Math.max(0, widths.length - 1))
+  const shown = widths.slice(first)
+
   return rows.map(row =>
     isRule(row)
-      ? `|${widths.map(width => '-'.repeat(width + 2)).join('|')}|`
-      : `|${widths
+      ? `|${shown.map(width => '-'.repeat(width + 2)).join('|')}|`
+      : `|${shown
           .map((width, at) => {
-            const cell = row[at] ?? ''
+            const cell = row[at + first] ?? ''
             return ` ${cell}${' '.repeat(Math.max(0, width - cells(cell)))} `
           })
           .join('|')}|`,
   )
 }
+
+// How many columns a table has.
+const tableColumns = (text: string) =>
+  Math.max(1, ...text.split('\n').map(line =>
+    line.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').length,
+  ))
 
 function entriesOf(all: Item[], columns: number): Entry[] {
   const width = Math.max(12, columns - 2)
@@ -471,8 +487,13 @@ function entriesOf(all: Item[], columns: number): Entry[] {
           let end = at
           while (end + 1 < lines.length && (lines[end + 1] as string).trimStart().startsWith('|')) end += 1
           const block = lines.slice(at, end + 1)
-          // Drawn by the plugin, one row a line (see tableLines).
-          add('table', block.join('\n'), block.length)
+          const text = block.join('\n')
+          const isWide = cells(tableLines(text)[0] ?? '') > width
+          // A table that fits goes to Markdown and is drawn with its rules (a
+          // rule between rows, at most); a wider one is drawn by the plugin,
+          // a row a line, under its column buttons.
+          add('table', text, isWide ? block.length + 1 : block.length * 2 + 1)
+          ;(out[out.length - 1] as Entry).isWide = isWide
           at = end
         } else if (line.trimStart().startsWith('```')) {
           let end = at + 1
@@ -546,6 +567,7 @@ async function draw(
 
   const typed = await read($, draft)
   const skippedBy = await read($, pageAtom)
+  const columnFrom = await read($, columnAtom)
   const mine = all.filter(item => item.sid === sid || item.isPinned)
   const running = mine.filter(item => item.status === 'pending').length
 
@@ -704,10 +726,29 @@ async function draw(
       continue
     }
     flush()
-    if (entry.kind === 'table') {
+    if (entry.kind === 'table' && !entry.isWide) {
+      history.push(<Markdown key={entry.key} text={entry.text} />)
+    } else if (entry.kind === 'table') {
+      const count = tableColumns(entry.text)
+      const from = Math.min(columnFrom, count - 1)
       history.push(
         <Box key={entry.key} flexDirection="column">
-          {tableLines(entry.text).map((line, at) => (
+          <Box flexDirection="row" gap={1}>
+            <Button
+              key={`cols-left:${entry.key}`}
+              plain
+              label="<"
+              onPress={() => then(update($, columnAtom, n => Math.max(0, Math.min(n, count - 1) - 1)))}
+            />
+            <Text dimColor>{`列 ${from + 1}- / ${count}`}</Text>
+            <Button
+              key={`cols-right:${entry.key}`}
+              plain
+              label=">"
+              onPress={() => then(update($, columnAtom, n => Math.min(count - 1, n + 1)))}
+            />
+          </Box>
+          {tableLines(entry.text, from).map((line, at) => (
             <Text key={`${entry.key}:${at}`} wrap="truncate-end" bold={at === 0}>
               {line}
             </Text>
@@ -886,7 +927,12 @@ async function draw(
         {isFixed ? (
           <Box
             flexDirection="column"
-            justifyContent="flex-end"
+            // All of it fits: from the top. Otherwise the newest at the bottom.
+            justifyContent={
+              list.reduce((sum, entry) => sum + entry.rows, 0) <= room
+                ? 'flex-start'
+                : 'flex-end'
+            }
             {...(site.isBand ? { flexGrow: 1 } : { height: room })}
             overflow="hidden"
           >
