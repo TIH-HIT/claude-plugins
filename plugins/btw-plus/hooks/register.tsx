@@ -534,7 +534,7 @@ async function draw(
   const list = entriesOf(mine, columns)
   const fromEnd = Math.min(Math.max(0, skippedBy), Math.max(0, list.length - 1))
   const view = isFixed
-    ? windowOf(list, fromEnd, room)
+    ? windowOf(list, fromEnd, room + (site.isBand ? 3 : 0))
     : { start: 0, end: list.length, shown: list }
 
   const { Box, Text, Button, Markdown } = table
@@ -700,7 +700,13 @@ async function draw(
 
   const frame = {
     ...(site.isBand
-      ? { borderStyle: 'round' as const, borderColor: 'promptBorder' as const, paddingX: 1 }
+      ? {
+          borderStyle: 'round' as const,
+          borderColor: 'promptBorder' as const,
+          paddingX: 1,
+          // Exactly the rows the band shows, whatever the history holds.
+          height: site.rows,
+        }
       : {}),
     ...(String(options.background ?? '').trim()
       ? { backgroundColor: String(options.background).trim() }
@@ -820,7 +826,7 @@ async function draw(
           <Box
             flexDirection="column"
             justifyContent="flex-end"
-            height={room}
+            {...(site.isBand ? { flexGrow: 1 } : { height: room })}
             overflow="hidden"
           >
             {history}
@@ -912,6 +918,10 @@ async function draw(
           )}
         </Box>
       </Box>
+      {/* The engine scrolls a band only when its tree is taller than the band:
+          two rows past the window, never drawn, make it so, and the wheel is
+          then raised as ui.scroll instead of going to the conversation. */}
+      {site.isBand ? <Box height={2} /> : null}
     </Box>
   )
 }
